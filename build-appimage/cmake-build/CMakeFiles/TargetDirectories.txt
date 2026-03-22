@@ -1,0 +1,9 @@
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/sfogliaccio.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/edit_cache.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/rebuild_cache.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/list_install_components.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/install.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/install/local.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/install/strip.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/sfogliaccio_autogen_timestamp_deps.dir
+/home/accio/vista/programmi/sfogliaccio/build-appimage/cmake-build/CMakeFiles/sfogliaccio_autogen.dir

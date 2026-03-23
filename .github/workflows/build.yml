@@ -1,0 +1,100 @@
+name: Build SFOGLI-ACCIO Windows
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+jobs:
+  build-windows:
+    name: Windows x64 (.exe)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Installa Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.7.0'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+          cache: true
+      - name: Configura MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compila MuPDF con MSBuild
+        run: |
+          git clone --depth=1 --recurse-submodules git://git.ghostscript.com/mupdf.git mupdf-src
+          cd mupdf-src
+          msbuild platform\win32\mupdf.sln /p:Configuration=Release /p:Platform=x64 /t:libmupdf /m /nologo /verbosity:minimal
+          $lib = "$(Get-Location)\platform\win32\x64\Release\libmupdf.lib"
+          echo "MUPDF_LIB=$lib" >> $env:GITHUB_ENV
+          echo "MUPDF_INC=$(Get-Location)\include" >> $env:GITHUB_ENV
+        shell: pwsh
+      - name: CMake Configure
+        run: |
+          cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DMUPDF_INCLUDE_DIRS="$env:MUPDF_INC" -DMUPDF_LIBRARIES="$env:MUPDF_LIB"
+        shell: pwsh
+      - name: Build
+        run: cmake --build build --parallel
+        shell: pwsh
+      - name: Deploy Qt DLL
+        run: |
+          mkdir deploy
+          copy build\sfogliaccio.exe deploy\
+          windeployqt --release --no-translations deploy\sfogliaccio.exe
+        shell: pwsh
+      - name: Crea installer NSIS
+        run: |
+          choco install nsis -y --no-progress
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if (-not $version) { $version = "1.0.0" }
+          $lines = @(
+            "Unicode true",
+            "Name `"SFOGLI-ACCIO $version`"",
+            'OutFile "SfogliAccio-Setup.exe"',
+            'InstallDir "$PROGRAMFILES64\SFOGLI-ACCIO"',
+            "RequestExecutionLevel admin",
+            "SetCompressor /SOLID lzma",
+            '!include "MUI2.nsh"',
+            "!define MUI_ABORTWARNING",
+            "!insertmacro MUI_PAGE_WELCOME",
+            "!insertmacro MUI_PAGE_DIRECTORY",
+            "!insertmacro MUI_PAGE_INSTFILES",
+            "!insertmacro MUI_PAGE_FINISH",
+            "!insertmacro MUI_UNPAGE_CONFIRM",
+            "!insertmacro MUI_UNPAGE_INSTFILES",
+            '!insertmacro MUI_LANGUAGE "Italian"',
+            "Section",
+            '  SetOutPath "$INSTDIR"',
+            '  File /r "deploy\*.*"',
+            '  WriteRegStr HKCU "Software\Classes\.pdf\OpenWithProgids" "SfogliAccio.PDF" ""',
+            '  WriteRegStr HKCU "Software\Classes\SfogliAccio.PDF" "" "Documento PDF"',
+            '  WriteRegStr HKCU "Software\Classes\SfogliAccio.PDF\shell\open\command" "" "$\"$INSTDIR\sfogliaccio.exe$\" $\"%1$\""',
+            '  CreateShortcut "$DESKTOP\SFOGLI-ACCIO.lnk" "$INSTDIR\sfogliaccio.exe" "" "$INSTDIR\sfogliaccio.exe" 0',
+            '  CreateDirectory "$SMPROGRAMS\SFOGLI-ACCIO"',
+            '  CreateShortcut "$SMPROGRAMS\SFOGLI-ACCIO\SFOGLI-ACCIO.lnk" "$INSTDIR\sfogliaccio.exe" "" "$INSTDIR\sfogliaccio.exe" 0',
+            '  WriteUninstaller "$INSTDIR\Uninstall.exe"',
+            '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SFOGLI-ACCIO" "DisplayName" "SFOGLI-ACCIO"',
+            '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SFOGLI-ACCIO" "UninstallString" "$INSTDIR\Uninstall.exe"',
+            '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SFOGLI-ACCIO" "DisplayIcon" "$INSTDIR\sfogliaccio.exe"',
+            '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SFOGLI-ACCIO" "Publisher" "ACCIO"',
+            '  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SFOGLI-ACCIO" "DisplayVersion" "1.0.0"',
+            "SectionEnd",
+            'Section "Uninstall"',
+            '  RMDir /r "$INSTDIR"',
+            '  Delete "$DESKTOP\SFOGLI-ACCIO.lnk"',
+            '  RMDir /r "$SMPROGRAMS\SFOGLI-ACCIO"',
+            '  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SFOGLI-ACCIO"',
+            '  DeleteRegKey HKCU "Software\Classes\SfogliAccio.PDF"',
+            "SectionEnd"
+          )
+          $lines -join "`n" | Out-File -FilePath installer.nsi -Encoding UTF8
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
+        shell: pwsh
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SfogliAccio-Windows
+          path: SfogliAccio-Setup.exe

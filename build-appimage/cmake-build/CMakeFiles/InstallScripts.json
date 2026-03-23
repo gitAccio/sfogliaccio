@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/accio/sfogliaccio/build-appimage/cmake-build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -1,0 +1,2 @@
+/usr/local/bin/sfogliaccio
+/usr/local/share/applications/sfogliaccio.desktop

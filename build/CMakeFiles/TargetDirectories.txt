@@ -1,0 +1,9 @@
+/home/accio/sfogliaccio/build/CMakeFiles/sfogliaccio.dir
+/home/accio/sfogliaccio/build/CMakeFiles/edit_cache.dir
+/home/accio/sfogliaccio/build/CMakeFiles/rebuild_cache.dir
+/home/accio/sfogliaccio/build/CMakeFiles/list_install_components.dir
+/home/accio/sfogliaccio/build/CMakeFiles/install.dir
+/home/accio/sfogliaccio/build/CMakeFiles/install/local.dir
+/home/accio/sfogliaccio/build/CMakeFiles/install/strip.dir
+/home/accio/sfogliaccio/build/CMakeFiles/sfogliaccio_autogen_timestamp_deps.dir
+/home/accio/sfogliaccio/build/CMakeFiles/sfogliaccio_autogen.dir

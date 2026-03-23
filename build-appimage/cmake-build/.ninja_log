@@ -1,0 +1,18 @@
+# ninja log v7
+3	1171	1774227355454912052	sfogliaccio_autogen/timestamp	1ae8fd28337cf0e8
+3	1171	1774227355454912052	sfogliaccio_autogen/mocs_compilation.cpp	1ae8fd28337cf0e8
+3	1171	1774227355454912052	/home/accio/sfogliaccio/build-appimage/cmake-build/sfogliaccio_autogen/timestamp	1ae8fd28337cf0e8
+3	1171	1774227355454912052	/home/accio/sfogliaccio/build-appimage/cmake-build/sfogliaccio_autogen/mocs_compilation.cpp	1ae8fd28337cf0e8
+1173	1183	1774227355486959511	qrc_resources.cpp	a211bf430fd6c05f
+1173	1183	1774227355486959511	/home/accio/sfogliaccio/build-appimage/cmake-build/qrc_resources.cpp	a211bf430fd6c05f
+1185	1248	1774227355490325546	CMakeFiles/sfogliaccio.dir/qrc_resources.cpp.o	825e33616fcbad6a
+1185	9440	1774227355489841220	CMakeFiles/sfogliaccio.dir/src/TitleBar.cpp.o	2d0af354ef492941
+1185	10162	1774227355490087196	CMakeFiles/sfogliaccio.dir/src/ZoomController.cpp.o	264c17fb5b56a047
+1184	10558	1774227355489614912	CMakeFiles/sfogliaccio.dir/src/SearchBar.cpp.o	df172e551d7d8a8
+1184	11541	1774227355488963030	CMakeFiles/sfogliaccio.dir/src/PdfDocument.cpp.o	d3481e4f3e457229
+1183	11545	1774227355488255802	CMakeFiles/sfogliaccio.dir/src/main.cpp.o	4ce5907055fd4c33
+1183	12163	1774227355486959511	CMakeFiles/sfogliaccio.dir/sfogliaccio_autogen/mocs_compilation.cpp.o	21b976e2c373ca86
+1183	14963	1774227355488588241	CMakeFiles/sfogliaccio.dir/src/MainWindow.cpp.o	794d8aa6f87018ff
+1184	15331	1774227355489468345	CMakeFiles/sfogliaccio.dir/src/SidebarWidget.cpp.o	1ba96e2df9401de3
+1184	16578	1774227355489232149	CMakeFiles/sfogliaccio.dir/src/PdfView.cpp.o	55433909537ebc92
+16579	16993	1774227370883145021	sfogliaccio	19e8cc8ff577f5d5

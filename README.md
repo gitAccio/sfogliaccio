@@ -9,9 +9,7 @@
 >
 > Questo progetto — inclusi tutti i file sorgente, la documentazione e questo README — è stato **ideato, progettato e scritto integralmente tramite AI** (Claude di Anthropic), con supervisione umana da parte dell'autore.
 >
-> Ciò significa che potrebbero essere presenti **bug, scelte architetturali non ottimali, o comportamenti inattesi**. Il codice funziona ed è stato testato, ma non ha attraversato un processo di revisione tradizionale da parte di sviluppatori esperti.
->
-> Contributi, segnalazioni e correzioni sono benvenuti. 🙏
+> Potrebbero essere presenti **bug, scelte architetturali non ottimali, o comportamenti inattesi**. Contributi, segnalazioni e correzioni sono benvenuti. 🙏
 
 ---
 
@@ -34,25 +32,30 @@
 
 | Feature | Note |
 |---|---|
-| Rendering PDF vettoriale | MuPDF, qualità perfetta a qualsiasi DPI e zoom |
-| Tab multipli | Apri più PDF in tab separati, Ctrl+T / Ctrl+W |
-| Zoom libero | 10% – 600%, Ctrl+Scroll, step 15% |
+| Rendering PDF vettoriale | MuPDF + QGraphicsView, qualità perfetta a qualsiasi DPI e zoom |
+| Tab multipli | Apri più PDF in tab separati, Ctrl+T / Ctrl+W, drag per riordinare |
+| Zoom libero | 10% – 600%, Ctrl+Scroll, pinch trackpad, step 15% |
+| Fit automatico | Si adatta alla larghezza alla prima apertura |
 | Adatta larghezza / pagina | Fit automatico con un clic |
 | Rotazione | 0° / 90° / 180° / 270° |
 | Inversione colori | Lettura notturna, nessuna perdita qualità |
-| Selezione testo | Layer testo trasparente su ogni pagina, riconoscimento geometrico delle righe |
-| Copia testo | Ctrl+C, doppio clic per selezionare parola |
+| Tema chiaro/scuro | Ctrl+Shift+T |
+| Selezione testo | Precisa al pixel, doppio clic per parola |
+| Copia testo | Ctrl+C |
 | Evidenziatore | 6 colori: blu, giallo, verde, rosso, viola, rosa |
-| Ricerca full-text | Evidenzia tutte le occorrenze, naviga con Invio, scroll animato |
-| Sidebar | Miniature async, segnalibri PDF, metadati documento |
+| Ricerca full-text | Asincrona con progressivo, evidenzia tutte le occorrenze |
+| Modalità presentazione | F5 — fullscreen senza UI, Esc per uscire |
+| Doppia pagina | Ctrl+D — due pagine affiancate stile libro |
+| Cronologia navigazione | Alt+← / Alt+→ |
+| Sidebar | Miniature, indice PDF, preferiti personali, metadati |
+| Preferiti personali | Segnalibri per pagina salvati per ogni documento |
+| PDF con password | Dialog automatico per PDF protetti |
 | Stampa | Via QPrinter nativo del sistema |
 | Drag & drop | Trascina PDF sulla finestra |
-| Apertura da CLI | `sfogliaccio documento.pdf` |
-| File recenti | Ultimi 10 file, con pulizia automatica |
+| Apertura da CLI | `sfogliaccio documento.pdf` / `sfogliaccio doc.pdf --page 42` |
+| File recenti | Ultimi 10 file |
+| Memoria sessione | Ripristina zoom e pagina per ogni documento |
 | Ridimensionamento finestra | Resize nativo su tutti i bordi |
-| Titlebar custom | Drag-to-move, doppio clic per massimizzare |
-| Memoria finestra | Ripristina posizione e dimensione all'avvio |
-| Schermo intero | F11 |
 
 ---
 
@@ -67,8 +70,11 @@
 | `Ctrl+F` | Cerca nel documento |
 | `Ctrl+C` | Copia testo selezionato |
 | `Ctrl+A` | Seleziona tutto (pagina corrente) |
+| `Ctrl+M` | Aggiungi pagina ai preferiti |
 | `Ctrl+B` | Mostra/nascondi sidebar |
 | `Ctrl+I` | Inverti colori |
+| `Ctrl+D` | Modalità doppia pagina |
+| `Ctrl+Shift+T` | Tema chiaro/scuro |
 | `Ctrl+=` | Zoom in |
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Zoom 100% |
@@ -78,8 +84,11 @@
 | `Ctrl+R` | Ruota orario |
 | `Ctrl+Shift+R` | Ruota antiorario |
 | `Ctrl+P` | Stampa |
+| `Alt+←` / `Alt+→` | Cronologia navigazione |
 | `Ctrl+←` / `Ctrl+→` | Pagina precedente / successiva |
 | `Ctrl+Home` / `Ctrl+End` | Prima / ultima pagina |
+| `F5` | Modalità presentazione |
+| `Esc` | Esci dalla presentazione |
 | `F11` | Schermo intero |
 | `F1` | Informazioni |
 
@@ -118,12 +127,18 @@ cmake --build build
 ./build/sfogliaccio
 ```
 
+### Apertura da riga di comando
+
+```bash
+sfogliaccio documento.pdf
+sfogliaccio documento.pdf --page 42
+sfogliaccio documento.pdf -p 42
+```
+
 ### Installazione di sistema (Linux)
 
 ```bash
 sudo cmake --install build
-# Installa in /usr/local/bin/sfogliaccio
-# Aggiunge sfogliaccio.desktop al menu applicazioni
 ```
 
 ---
@@ -135,29 +150,21 @@ sfogliaccio/
 ├── CMakeLists.txt
 ├── README.md
 ├── LICENSE
+├── INSTALL.md
 ├── include/
 │   ├── Theme.h            # Colori, font, stylesheet globale
 │   ├── MainWindow.h       # Finestra principale con gestione tab
-│   ├── PdfDocument.h      # Wrapper MuPDF thread-safe
-│   ├── PdfView.h          # Scroll area + layer testo interattivo
-│   ├── SidebarWidget.h    # Miniature, segnalibri, metadati
-│   ├── SearchBar.h        # Barra di ricerca
-│   ├── TitleBar.h         # Titlebar custom
+│   ├── PdfDocument.h      # Wrapper MuPDF thread-safe, ricerca asincrona
+│   ├── PdfView.h          # QGraphicsView + QGraphicsScene lazy rendering
+│   ├── SidebarWidget.h    # Miniature, indice, preferiti, metadati
+│   ├── SearchBar.h        # Barra di ricerca con progress indicator
+│   ├── TitleBar.h         # Titlebar con tab integrati
 │   └── ZoomController.h   # Widget zoom
 ├── src/
-│   ├── main.cpp
-│   ├── MainWindow.cpp
-│   ├── PdfDocument.cpp
-│   ├── PdfView.cpp
-│   ├── SidebarWidget.cpp
-│   ├── SearchBar.cpp
-│   ├── TitleBar.cpp
-│   └── ZoomController.cpp
+│   └── *.cpp
 └── resources/
     ├── resources.qrc
-    ├── icon.png
-    ├── icon.ico
-    ├── app.rc
+    ├── icon.png / icon.ico / app.rc
     └── sfogliaccio.desktop
 ```
 
@@ -165,12 +172,12 @@ sfogliaccio/
 
 ## Note tecniche
 
-- Il rendering avviene su thread separati via **QtConcurrent** — la UI non si blocca mai
-- **MuPDF** è significativamente più veloce di Poppler per rendering e ricerca
-- Il layer testo usa le bounding box reali dei caratteri estratte da `fz_stext_page` — la selezione è precisa al pixel
-- La ricerca usa coordinate PDF native poi scalate allo zoom corrente, con scroll animato (180ms easing OutCubic) alla corrispondenza attiva
-- Su Windows il resize usa `WM_NCHITTEST` nativo per comportamento identico alle finestre di sistema
-- Compatibile con MuPDF 1.19+ (Ubuntu 22.04) e 1.24+ (Arch) tramite macro di compatibilità API
+- Architettura **QGraphicsView** — rendering lazy, zoom hardware-accelerated via trasformazione matriciale, gestione nativa di documenti con migliaia di pagine
+- **MuPDF** — motore di rendering più veloce disponibile (stesso di Sumatra PDF)
+- **Ricerca asincrona** — `QtConcurrent` in background, risultati progressivi senza bloccare l'UI
+- **Lazy rendering** — solo le pagine visibili vengono renderizzate, buffer di ±2 pagine
+- **Zoom trackpad** — pinch gesture via `QNativeGestureEvent`, anteprima visiva istantanea, re-render alla fine del gesto
+- Compatibile con MuPDF 1.19+ (Ubuntu 22.04) e 1.24+ (Arch) via macro di compatibilità API
 
 ---
 

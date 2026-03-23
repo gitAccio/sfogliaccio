@@ -1,40 +1,83 @@
 #include "TitleBar.h"
 #include "Theme.h"
 #include <QHBoxLayout>
+#include <QApplication>
 
 TitleBar::TitleBar(QWidget *parent) : QWidget(parent)
 {
     setFixedHeight(Theme::TITLEBAR_H);
-    setStyleSheet(QString("QWidget{background:%1;border-bottom:1px solid %2;}")
+    setStyleSheet(QString(
+        "TitleBar{background:%1;border-bottom:1px solid %2;}")
         .arg(Theme::SURFACE).arg(Theme::BORDER));
 
     auto *lay = new QHBoxLayout(this);
-    lay->setContentsMargins(12, 0, 0, 0);
-    lay->setSpacing(8);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(0);
 
+    // ── App name ──────────────────────────────────────────────────────────────
     m_appName = new QLabel("SFOGLI-ACCIO", this);
+    m_appName->setFixedHeight(Theme::TITLEBAR_H);
+    m_appName->setContentsMargins(14, 0, 12, 0);
     m_appName->setStyleSheet(QString(
         "font-size:11px;font-weight:800;color:%1;"
         "letter-spacing:2px;background:transparent;border:none;")
         .arg(Theme::ACCENT));
 
-    m_fileName = new QLabel("— Nessun file", this);
-    m_fileName->setStyleSheet(QString(
-        "font-size:11px;color:%1;background:transparent;border:none;")
-        .arg(Theme::TEXT_DIM));
-    m_fileName->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // ── Tab bar ───────────────────────────────────────────────────────────────
+    m_tabBar = new QTabBar(this);
+    m_tabBar->setTabsClosable(true);
+    m_tabBar->setMovable(true);
+    m_tabBar->setExpanding(false);
+    m_tabBar->setDrawBase(false);
+    m_tabBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_tabBar->setFixedHeight(Theme::TITLEBAR_H);
+    m_tabBar->setStyleSheet(QString(R"(
+        QTabBar {
+            background: transparent;
+        }
+        QTabBar::tab {
+            background: transparent;
+            color: %1;
+            padding: 0 14px;
+            height: %2px;
+            min-width: 100px;
+            max-width: 200px;
+            border-right: 1px solid %3;
+            font-size: 12px;
+        }
+        QTabBar::tab:selected {
+            background: %4;
+            color: %5;
+            border-bottom: 2px solid %5;
+        }
+        QTabBar::tab:hover:!selected {
+            background: %6;
+            color: %7;
+        }
+    )").arg(Theme::TEXT_DIM).arg(Theme::TITLEBAR_H)
+       .arg(Theme::BORDER)
+       .arg(Theme::SURFACE2).arg(Theme::ACCENT)
+       .arg(Theme::SURFACE3).arg(Theme::TEXT));
 
-    lay->addWidget(m_appName);
-    lay->addWidget(m_fileName);
-    lay->addStretch();
+    // ── New tab button ────────────────────────────────────────────────────────
+    m_newTabBtn = new QPushButton("+", this);
+    m_newTabBtn->setFixedSize(Theme::TITLEBAR_H, Theme::TITLEBAR_H);
+    m_newTabBtn->setToolTip("Nuovo tab (Ctrl+T)");
+    m_newTabBtn->setStyleSheet(QString(
+        "QPushButton{background:transparent;color:%1;border:none;"
+        "font-size:18px;font-weight:300;}"
+        "QPushButton:hover{background:%2;color:%3;}")
+        .arg(Theme::TEXT_DIM).arg(Theme::SURFACE3).arg(Theme::ACCENT));
 
+    // ── Window controls ───────────────────────────────────────────────────────
     QString btnBase = QString(
         "QPushButton{background:transparent;color:%1;"
-        "border:none;font-size:11px;}"
+        "border:none;font-size:13px;width:46px;}"
         "QPushButton:hover{background:%2;color:%3;}")
         .arg(Theme::TEXT_DIM).arg(Theme::SURFACE3).arg(Theme::TEXT);
     QString closeCss = QString(
-        "QPushButton{background:transparent;color:%1;border:none;font-size:11px;}"
+        "QPushButton{background:transparent;color:%1;"
+        "border:none;font-size:13px;width:46px;}"
         "QPushButton:hover{background:%2;color:white;}")
         .arg(Theme::TEXT_DIM).arg(Theme::DANGER);
 
@@ -51,19 +94,20 @@ TitleBar::TitleBar(QWidget *parent) : QWidget(parent)
     m_maxBtn->setToolTip("Massimizza");
     m_closeBtn->setToolTip("Chiudi");
 
-    lay->addWidget(m_minBtn);
-    lay->addWidget(m_maxBtn);
-    lay->addWidget(m_closeBtn);
+    // ── Layout ────────────────────────────────────────────────────────────────
+    lay->addWidget(m_appName, 0);
+    lay->addWidget(m_tabBar, 1);
+    lay->addWidget(m_newTabBtn, 0);
+    lay->addWidget(m_minBtn, 0);
+    lay->addWidget(m_maxBtn, 0);
+    lay->addWidget(m_closeBtn, 0);
 
     connect(m_minBtn,   &QPushButton::clicked, this, &TitleBar::minimizeRequested);
     connect(m_maxBtn,   &QPushButton::clicked, this, &TitleBar::maximizeRequested);
     connect(m_closeBtn, &QPushButton::clicked, this, &TitleBar::closeRequested);
 }
 
-void TitleBar::setFileName(const QString &name)
-{
-    m_fileName->setText(name.isEmpty() ? "— Nessun file" : "— " + name);
-}
+void TitleBar::setFileName(const QString &) {}  // no-op, kept for compatibility
 
 void TitleBar::mousePressEvent(QMouseEvent *e)
 {

@@ -1,102 +1,138 @@
 #pragma once
-#include <QScrollArea>
-#include <QWidget>
+#include <QGraphicsView>
+#include <QGraphicsScene>
+#include <QGraphicsItem>
 #include <QList>
-#include <QPixmap>
 #include <QRectF>
-#include <QPoint>
-#include <QWheelEvent>
+#include <QPixmap>
+#include <QColor>
+#include <QTimer>
 #include "PdfDocument.h"
 
-// ── TextLayer ─────────────────────────────────────────────────────────────────
-// Transparent overlay sitting exactly on top of a rendered page.
-// Handles mouse selection and maps pixel coords → PDF chars.
-class TextLayer : public QWidget
+class PdfPageItem;
+class PdfView;
+
+// ── PdfScene ──────────────────────────────────────────────────────────────────
+// Manages all page items. Pages are laid out vertically with a gap between them.
+class PdfScene : public QGraphicsScene
 {
     Q_OBJECT
 public:
-    explicit TextLayer(QWidget *parent = nullptr);
+    explicit PdfScene(QObject *parent = nullptr);
 
-    // Feed the extracted chars and the current zoom so we can map coords
-    void setPageText(const PageText &chars, float zoom);
+    void setDocument(PdfDocument *doc, float zoom, int rotation,
+                     bool inverted, bool doublePage);
     void clear();
 
-    // Select all text on this page
-    void selectAll();
+    PdfPageItem *pageItem(int index) const;
+    int          pageCount() const { return m_items.size(); }
+    QRectF       pageRect(int index) const;
 
-    // Return the currently selected text
+    void setZoom(float zoom);
+    void setRotation(int deg);
+    void setInverted(bool inv);
+    void setSearchMatches(const QList<SearchMatch> &matches);
+    void clearSearchMatches();
+    void setCurrentHighlight(int globalIdx);
+    void setSelectionColor(const QColor &c);
+
+    int  totalMatchCount() const { return m_totalMatches; }
+
     QString selectedText() const;
+    void    selectAll(int pageIndex);
 
-    // You can set a custom highlight color (for annotation-style highlighting)
-    void setHighlightColor(const QColor &c) { m_highlightColor = c; update(); }
-    QColor highlightColor() const { return m_highlightColor; }
-
-    // True if any text is selected
-    bool hasSelection() const { return !m_selIdx.isEmpty(); }
+    static constexpr int PAGE_GAP = 16;
 
 signals:
-    void selectionChanged();
-
-protected:
-    void paintEvent(QPaintEvent *) override;
-    void mousePressEvent(QMouseEvent *) override;
-    void mouseMoveEvent(QMouseEvent *) override;
-    void mouseReleaseEvent(QMouseEvent *) override;
-    void mouseDoubleClickEvent(QMouseEvent *) override;
+    void renderProgress(int done, int total);
 
 private:
-    // Return the index of the char whose bbox contains pt, or -1
-    int charAt(const QPoint &pt) const;
-    // Return indices of all chars between anchor and current
-    void updateSelection(int from, int to);
-
-    PageText      m_chars;   // chars with bbox already scaled to widget coords
-    QList<int>    m_selIdx;  // selected char indices, in order
-
-    int  m_anchorIdx  = -1;
-    int  m_currentIdx = -1;
-    bool m_pressing   = false;
-    float m_zoom      = 1.0f;
-    QColor m_highlightColor = QColor(77, 168, 255, 90); // default blue selection
+    QList<PdfPageItem*>  m_items;
+    PdfDocument         *m_doc         = nullptr;
+    float                m_zoom        = 1.0f;
+    int                  m_rotation    = 0;
+    bool                 m_inverted    = false;
+    bool                 m_doublePage  = false;
+    int                  m_totalMatches = 0;
+    QColor               m_selColor    = QColor(77, 168, 255, 90);
 };
 
-// ── PageWidget ────────────────────────────────────────────────────────────────
-class PageWidget : public QWidget
+// ── PdfPageItem ───────────────────────────────────────────────────────────────
+// One page in the scene. Renders itself lazily when visible.
+class PdfPageItem : public QObject, public QGraphicsItem
 {
     Q_OBJECT
 public:
-    explicit PageWidget(QWidget *parent = nullptr);
+    explicit PdfPageItem(PdfDocument *doc, int pageIndex,
+                         float zoom, int rotation, bool inverted,
+                         QGraphicsItem *parent = nullptr);
 
-    void setPixmap(const QPixmap &px);
-    void setPageText(const PageText &chars, float zoom);
+    QRectF boundingRect() const override;
+    void   paint(QPainter *painter, const QStyleOptionGraphicsItem *,
+                 QWidget *) override;
+
+    // Lazy rendering — called by PdfView when this item enters viewport
+    void requestRender(float zoom, int rotation, bool inverted);
+    bool isRendered() const { return !m_pixmap.isNull(); }
+
+    // Text selection
+    void     setPageText(const PageText &chars, float zoom);
+    void     setSelectionColor(const QColor &c) { m_selColor = c; update(); }
+    QString  selectedText() const;
+    void     selectAll();
+    void     clearSelection();
+    bool     hasSelection() const { return !m_selIdx.isEmpty(); }
+
+    // Search highlights
     void setHighlights(const QList<QRectF> &rects, float zoom);
     void setCurrentHighlight(int idx);
     void clearHighlights();
 
-    TextLayer *textLayer() { return m_textLayer; }
+    int pageIndex() const { return m_pageIndex; }
 
-    // Proxy for copy
-    QString selectedText() const;
-    void    selectAll();
-    bool    hasSelection() const;
+signals:
+    void rendered(int pageIndex);
 
 protected:
-    void paintEvent(QPaintEvent *) override;
-    void resizeEvent(QResizeEvent *) override;
+    void mousePressEvent(QGraphicsSceneMouseEvent *e) override;
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *e) override;
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *e) override;
+    void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *e) override;
+    void hoverMoveEvent(QGraphicsSceneHoverEvent *e) override;
 
 private:
-    QPixmap       m_pixmap;
+    int charAt(const QPointF &pt) const;
+    void updateSelection(int from, int to);
+
+    PdfDocument *m_doc;
+    int          m_pageIndex;
+    QPixmap      m_pixmap;
+    QSizeF       m_size;      // size in scene coords (pts * zoom)
+
+    // Text
+    PageText   m_chars;
+    QList<int> m_selIdx;
+    int        m_anchorIdx  = -1;
+    bool       m_pressing   = false;
+    QColor     m_selColor   = QColor(77, 168, 255, 90);
+
+    // Highlights
     QList<QRectF> m_highlights;
-    int           m_currentHL  = -1;
-    TextLayer    *m_textLayer  = nullptr;
+    int           m_currentHL = -1;
+
+    float m_renderedZoom     = 0;
+    int   m_renderedRotation = 0;
+    bool  m_renderedInverted = false;
+    bool  m_renderPending    = false;
 };
 
 // ── PdfView ───────────────────────────────────────────────────────────────────
-class PdfView : public QScrollArea
+class PdfView : public QGraphicsView
 {
     Q_OBJECT
 public:
     explicit PdfView(QWidget *parent = nullptr);
+    ~PdfView();
 
     void setDocument(PdfDocument *doc);
     void rerender();
@@ -107,6 +143,7 @@ public:
     int   rotation() const { return m_rotation; }
     void  setInverted(bool inv);
     bool  inverted() const { return m_inverted; }
+    void  setDoublePageMode(bool on);
 
     void scrollToPage(int index);
     int  currentPage() const { return m_currentPage; }
@@ -115,16 +152,15 @@ public:
     void setSearchMatches(const QList<SearchMatch> &matches);
     void clearSearchMatches();
     void jumpToMatch(int globalIdx);
-    int  totalMatchCount() const { return m_totalMatches; }
+    int  totalMatchCount() const;
 
-    // Text operations
     QString selectedText() const;
     void    copySelection() const;
     void    selectAll();
     void    setSelectionColor(const QColor &c);
 
 signals:
-    void currentPageChanged(int page); // 1-based
+    void currentPageChanged(int page);
     void renderProgress(int done, int total);
     void zoomChangeRequested(float newZoom);
     void hasSelectionChanged(bool has);
@@ -132,24 +168,38 @@ signals:
 protected:
     void wheelEvent(QWheelEvent *e) override;
     void keyPressEvent(QKeyEvent *e) override;
+    bool event(QEvent *e) override;
+    void scrollContentsBy(int dx, int dy) override;
+    void resizeEvent(QResizeEvent *e) override;
 
 private slots:
-    void onScrollChanged();
+    void onVisibilityCheck();
 
 private:
-    void buildPageWidgets();
-    void renderPageAsync(int index);
-    void loadTextAsync(int index);
+    void applyZoomTransform();
+    void checkVisiblePages();
+    void renderPageAsync(PdfPageItem *item);
 
-    PdfDocument         *m_doc    = nullptr;
-    QWidget             *m_inner  = nullptr;
-    QList<PageWidget *>  m_pages;
+    PdfScene *m_scene       = nullptr;
+    PdfDocument *m_doc      = nullptr;
 
-    float m_zoom         = 1.0f;
-    int   m_rotation     = 0;
-    bool  m_inverted     = false;
-    int   m_currentPage  = 0;
-    int   m_totalMatches = 0;
+    float m_zoom            = 1.0f;
+    int   m_rotation        = 0;
+    bool  m_inverted        = false;
+    bool  m_doublePage      = false;
+    int   m_currentPage     = 0;
 
+    // Pinch
+    float m_pinchAccum      = 1.0f;
+    bool  m_pinchActive     = false;
+    float m_pinchStartZoom  = 1.0f;
+
+    // Visibility check debounce
+    QTimer *m_visTimer      = nullptr;
+
+    // Search
     QList<QList<QRectF>> m_matchRects;
+    int m_totalMatches      = 0;
+
+    QColor m_selColor       = QColor(77, 168, 255, 90);
 };

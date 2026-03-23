@@ -35,6 +35,9 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     void openFile(const QString &path);
+    void scrollToPage(int index) {
+        if (auto *t = currentTab()) t->view->scrollToPage(index);
+    }
 
 protected:
     void dragEnterEvent(QDragEnterEvent *e) override;
@@ -72,6 +75,11 @@ private slots:
     void onZoomChangeRequested(float zoom);
     void onOpenRecent(const QString &path);
     void onCopyText();
+    void onPresentationMode();
+    void onToggleTheme();
+    void onNavBack();
+    void onNavForward();
+    void onToggleDoublePage();
 
 private:
     void buildUI();
@@ -82,6 +90,7 @@ private:
 
     void     switchToTab(int index);
     void     closeTab(int index);
+    void     finishOpenFile(PdfTab *tab);
     PdfTab  *currentTab();
     PdfTab  *currentTab() const;
     int      tabIndexForPath(const QString &path) const;
@@ -128,6 +137,13 @@ private:
     QPushButton   *m_newTabBtn     = nullptr;
 
     bool m_sidebarOpen      = false;
+    bool m_lightTheme       = false;
+    bool m_doublePage        = false;
     int  m_searchMatchIdx   = 0;
     int  m_searchMatchTotal = 0;
+
+    // Cronologia navigazione per tab corrente
+    QList<int>  m_navHistory;
+    int         m_navHistoryIdx = -1;
+    bool        m_navJumping    = false;  // evita loop durante jump
 };

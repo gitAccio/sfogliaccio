@@ -1,26 +1,17 @@
 #include "PdfDocument.h"
 #include <QDebug>
+#include <QtConcurrent/QtConcurrent>
 
 // ── MuPDF version compatibility ───────────────────────────────────────────────
-// Ubuntu 22.04 ships MuPDF 1.19, Arch ships 1.24+
-// API differences:
-//   fz_search_page: old = (ctx, page, needle, quads, max)
-//                   new = (ctx, page, needle, NULL, quads, max)
-//   fz_outline::page: old = int, new = struct { int page; }
-//
-// We detect via FZ_VERSION_MAJOR/MINOR at compile time.
-
 #ifndef FZ_VERSION_MAJOR
 #  define FZ_VERSION_MAJOR 1
 #endif
 #ifndef FZ_VERSION_MINOR
 #  define FZ_VERSION_MINOR 0
 #endif
-
 #define MUPDF_VERSION_GE(maj, min) \
     (FZ_VERSION_MAJOR > (maj) || (FZ_VERSION_MAJOR == (maj) && FZ_VERSION_MINOR >= (min)))
 
-// fz_search_page gained the 'sep' parameter in 1.22
 #if MUPDF_VERSION_GE(1, 22)
 #  define MUPDF_SEARCH(ctx, pg, needle, quads, max) \
      fz_search_page(ctx, pg, needle, nullptr, quads, max)
@@ -29,7 +20,6 @@
      fz_search_page(ctx, pg, needle, quads, max)
 #endif
 
-// fz_outline::page became a struct in 1.21
 #if MUPDF_VERSION_GE(1, 21)
 #  define MUPDF_OUTLINE_PAGE(n) ((n)->page.page)
 #else
@@ -46,22 +36,74 @@ PdfDocument::PdfDocument(QObject *parent) : QObject(parent)
 
 PdfDocument::~PdfDocument()
 {
+    cancelSearch();
     if (m_doc && m_ctx) fz_drop_document(m_ctx, m_doc);
     if (m_ctx)          fz_drop_context(m_ctx);
 }
 
-// ── load/close ────────────────────────────────────────────────────────────────
+// ── load ──────────────────────────────────────────────────────────────────────
 bool PdfDocument::load(const QString &path)
 {
     QMutexLocker lock(&m_mutex);
     if (m_doc) { fz_drop_document(m_ctx, m_doc); m_doc = nullptr; }
     m_loaded = false; m_pageCount = 0; m_path.clear();
+    m_needsPassword = false;
 
     fz_try(m_ctx) {
-        m_doc       = fz_open_document(m_ctx, path.toUtf8().constData());
+        m_doc = fz_open_document(m_ctx, path.toUtf8().constData());
+
+        // Controlla se richiede password
+        if (fz_needs_password(m_ctx, m_doc)) {
+            m_needsPassword = true;
+            m_path = path;
+            // Non droppare m_doc — lo teniamo per loadWithPassword
+            emit passwordRequired();
+            return false;
+        }
+
         m_pageCount = fz_count_pages(m_ctx, m_doc);
         m_path      = path;
         m_loaded    = true;
+    }
+    fz_catch(m_ctx) {
+        emit loadError(QString("Errore: %1").arg(fz_caught_message(m_ctx)));
+        return false;
+    }
+    return true;
+}
+
+bool PdfDocument::loadWithPassword(const QString &path, const QString &password)
+{
+    QMutexLocker lock(&m_mutex);
+
+    // Se il doc è già aperto (da load() che ha trovato password), usa quello
+    if (!m_doc) {
+        fz_try(m_ctx) {
+            m_doc = fz_open_document(m_ctx, path.toUtf8().constData());
+        }
+        fz_catch(m_ctx) {
+            emit loadError(QString("Errore: %1").arg(fz_caught_message(m_ctx)));
+            return false;
+        }
+    }
+
+    bool ok = false;
+    fz_try(m_ctx) {
+        ok = fz_authenticate_password(m_ctx, m_doc,
+                                       password.toUtf8().constData());
+    }
+    fz_catch(m_ctx) {}
+
+    if (!ok) {
+        emit loadError("Password errata.");
+        return false;
+    }
+
+    fz_try(m_ctx) {
+        m_pageCount = fz_count_pages(m_ctx, m_doc);
+        m_path      = path;
+        m_loaded    = true;
+        m_needsPassword = false;
     }
     fz_catch(m_ctx) {
         emit loadError(QString("Errore: %1").arg(fz_caught_message(m_ctx)));
@@ -114,7 +156,6 @@ QImage PdfDocument::renderPage(int index, float zoom, int rotation) const
             fz_pixmap *pix = fz_new_pixmap_with_bbox(
                 m_ctx, fz_device_rgb(m_ctx), ibounds, nullptr, 1);
             fz_clear_pixmap_with_value(m_ctx, pix, 0xff);
-
             fz_device *dev = fz_new_draw_device(m_ctx, mat, pix);
             fz_run_page(m_ctx, pg, dev, fz_identity, nullptr);
             fz_close_device(m_ctx, dev);
@@ -137,9 +178,7 @@ QImage PdfDocument::renderPage(int index, float zoom, int rotation) const
         }
         fz_drop_page(m_ctx, pg);
     }
-    fz_catch(m_ctx) {
-        qWarning() << "renderPage p" << index << ":" << fz_caught_message(m_ctx);
-    }
+    fz_catch(m_ctx) {}
     return result;
 }
 
@@ -187,13 +226,11 @@ PageText PdfDocument::extractText(int pageIndex) const
         fz_drop_stext_page(m_ctx, stext);
         fz_drop_page(m_ctx, pg);
     }
-    fz_catch(m_ctx) {
-        qWarning() << "extractText p" << pageIndex << ":" << fz_caught_message(m_ctx);
-    }
+    fz_catch(m_ctx) {}
     return result;
 }
 
-// ── search ────────────────────────────────────────────────────────────────────
+// ── search (sync) ─────────────────────────────────────────────────────────────
 QList<SearchMatch> PdfDocument::search(const QString &query) const
 {
     QList<SearchMatch> results;
@@ -208,8 +245,7 @@ QList<SearchMatch> PdfDocument::search(const QString &query) const
             int found = MUPDF_SEARCH(m_ctx, pg, utf8.constData(), quads, 256);
             fz_drop_page(m_ctx, pg);
             if (found > 0) {
-                SearchMatch m;
-                m.pageIndex = i;
+                SearchMatch m; m.pageIndex = i;
                 for (int q = 0; q < found; ++q) {
                     fz_rect r = fz_rect_from_quad(quads[q]);
                     m.rects.append(QRectF(r.x0, r.y0, r.x1-r.x0, r.y1-r.y0));
@@ -220,6 +256,58 @@ QList<SearchMatch> PdfDocument::search(const QString &query) const
         fz_catch(m_ctx) {}
     }
     return results;
+}
+
+// ── search (async) ────────────────────────────────────────────────────────────
+void PdfDocument::searchAsync(const QString &query)
+{
+    if (!m_loaded || query.isEmpty()) {
+        emit searchFinished({});
+        return;
+    }
+    m_searchCancelled = false;
+
+    // Lancia in background — emette searchProgress ogni 10 pagine
+    auto future = QtConcurrent::run([this, query]() {
+        QList<SearchMatch> results;
+        QByteArray utf8 = query.toUtf8();
+        int total = m_pageCount;
+
+        for (int i = 0; i < total; ++i) {
+            if (m_searchCancelled) {
+                emit searchCancelled();
+                return;
+            }
+            {
+                QMutexLocker lock(&m_mutex);
+                if (!m_loaded) break;
+                fz_try(m_ctx) {
+                    fz_page *pg = fz_load_page(m_ctx, m_doc, i);
+                    fz_quad quads[256];
+                    int found = MUPDF_SEARCH(m_ctx, pg, utf8.constData(), quads, 256);
+                    fz_drop_page(m_ctx, pg);
+                    if (found > 0) {
+                        SearchMatch m; m.pageIndex = i;
+                        for (int q = 0; q < found; ++q) {
+                            fz_rect r = fz_rect_from_quad(quads[q]);
+                            m.rects.append(QRectF(r.x0, r.y0, r.x1-r.x0, r.y1-r.y0));
+                        }
+                        results.append(m);
+                    }
+                }
+                fz_catch(m_ctx) {}
+            }
+            // Emetti progresso ogni 10 pagine o all'ultima
+            if (i % 10 == 0 || i == total-1)
+                emit searchProgress(i+1, total, results);
+        }
+        emit searchFinished(results);
+    });
+}
+
+void PdfDocument::cancelSearch()
+{
+    m_searchCancelled = true;
 }
 
 // ── bookmarks ─────────────────────────────────────────────────────────────────

@@ -1,5 +1,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QCommandLineOption>
+#include <QTimer>
 #include "MainWindow.h"
 #include "Theme.h"
 
@@ -16,14 +18,26 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument("file", "PDF da aprire (opzionale)");
+
+    QCommandLineOption pageOpt({"p", "page"},
+        "Apri direttamente alla pagina N", "N");
+    parser.addOption(pageOpt);
     parser.process(app);
 
     MainWindow win;
     win.show();
 
     const QStringList args = parser.positionalArguments();
-    if (!args.isEmpty())
+    if (!args.isEmpty()) {
         win.openFile(args.first());
+        if (parser.isSet(pageOpt)) {
+            int page = parser.value(pageOpt).toInt();
+            if (page > 0)
+                QTimer::singleShot(500, &win, [&win, page]{
+                    win.scrollToPage(page - 1);
+                });
+        }
+    }
 
     return app.exec();
 }

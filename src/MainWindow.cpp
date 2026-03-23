@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Theme.h"
+using namespace Theme;
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -23,6 +24,8 @@
 #include <QClipboard>
 #include <QShortcut>
 #include <QWindow>
+#include <QPalette>
+#include <QInputDialog>
 #ifdef Q_OS_WIN
 #  include <windows.h>
 #  include <windowsx.h>
@@ -115,21 +118,8 @@ void MainWindow::buildUI()
     connect(m_titleBar, &TitleBar::closeRequested, this, &QMainWindow::close);
     root->addWidget(m_titleBar);
 
-    // Tab bar row: tabbar + "+" button side by side
+    // Tab bar integrata nella TitleBar — buildTabBar collega i segnali
     buildTabBar();
-    {
-        auto *tabRow = new QWidget(this);
-        tabRow->setFixedHeight(Theme::TABBAR_H);
-        tabRow->setStyleSheet(QString("background:%1;border-bottom:1px solid %2;")
-            .arg(Theme::SURFACE).arg(Theme::BORDER));
-        auto *tabRowL = new QHBoxLayout(tabRow);
-        tabRowL->setContentsMargins(0,0,0,0);
-        tabRowL->setSpacing(0);
-        tabRowL->addWidget(m_tabBar, 1);
-        m_newTabBtn->setParent(tabRow);
-        tabRowL->addWidget(m_newTabBtn, 0);
-        root->addWidget(tabRow);
-    }
 
     // Toolbar
     buildToolbar();
@@ -231,35 +221,12 @@ void MainWindow::buildUI()
 
 void MainWindow::buildTabBar()
 {
-    m_tabBar = new QTabBar(this);
-    m_tabBar->setTabsClosable(true);
-    m_tabBar->setMovable(true);
-    m_tabBar->setExpanding(false);
-    m_tabBar->setFixedHeight(Theme::TABBAR_H);
-    m_tabBar->setStyleSheet(QString(R"(
-        QTabBar { background:%1; }
-        QTabBar::tab {
-            background:%1; color:%3;
-            padding:0 18px; height:%4px;
-            min-width:120px; max-width:220px;
-            border-right:1px solid %2; font-size:12px;
-        }
-        QTabBar::tab:selected  { background:%5; color:%6; border-bottom:2px solid %6; }
-        QTabBar::tab:hover:!selected { background:%7; color:%8; }
-    )").arg(Theme::SURFACE).arg(Theme::BORDER)
-       .arg(Theme::TEXT_DIM).arg(Theme::TABBAR_H)
-       .arg(Theme::SURFACE2).arg(Theme::ACCENT)
-       .arg(Theme::SURFACE3).arg(Theme::TEXT));
+    // Tab bar e pulsante "+" sono ora integrati nella TitleBar
+    // Li recuperiamo direttamente da lì
+    m_tabBar    = m_titleBar->tabBar();
+    m_newTabBtn = m_titleBar->newTabBtn();
 
-    m_newTabBtn = new QPushButton("+", this);
-    m_newTabBtn->setFixedSize(Theme::TABBAR_H, Theme::TABBAR_H);
-    m_newTabBtn->setToolTip("Apri nuovo tab (Ctrl+T)");
-    m_newTabBtn->setStyleSheet(QString(
-        "QPushButton{background:transparent;color:%1;border:none;font-size:20px;font-weight:300;}"
-        "QPushButton:hover{background:%2;color:%3;}")
-        .arg(Theme::TEXT_DIM).arg(Theme::SURFACE3).arg(Theme::ACCENT));
     connect(m_newTabBtn, &QPushButton::clicked, this, &MainWindow::onNewTab);
-
     connect(m_tabBar, &QTabBar::currentChanged,    this, &MainWindow::onTabChanged);
     connect(m_tabBar, &QTabBar::tabCloseRequested, this, &MainWindow::onTabCloseRequested);
     connect(m_tabBar, &QTabBar::tabMoved, this, [this](int from, int to){
@@ -391,9 +358,36 @@ void MainWindow::buildToolbar()
 
     tbL->addStretch();
 
+    // Cronologia navigazione
+    auto *navBackBtn = makeTbBtn("◁", "Indietro (Alt+←)", m_toolbar);
+    auto *navFwdBtn  = makeTbBtn("▷", "Avanti (Alt+→)",   m_toolbar);
+    navBackBtn->setFixedWidth(36); navFwdBtn->setFixedWidth(36);
+    connect(navBackBtn, &QPushButton::clicked, this, &MainWindow::onNavBack);
+    connect(navFwdBtn,  &QPushButton::clicked, this, &MainWindow::onNavForward);
+    tbL->addWidget(navBackBtn);
+    tbL->addWidget(navFwdBtn);
+    tbL->addWidget(makeSep(m_toolbar));
+
+    // Modalità doppia pagina
+    auto *dblPageBtn = makeTbBtn("⊟⊟ Doppia", "Doppia pagina (Ctrl+D)", m_toolbar);
+    dblPageBtn->setCheckable(true);
+    connect(dblPageBtn, &QPushButton::clicked, this, &MainWindow::onToggleDoublePage);
+    tbL->addWidget(dblPageBtn);
+
+    // Tema chiaro/scuro
+    auto *themeBtn = makeTbBtn("☀", "Tema chiaro/scuro (Ctrl+Shift+T)", m_toolbar);
+    connect(themeBtn, &QPushButton::clicked, this, &MainWindow::onToggleTheme);
+    tbL->addWidget(themeBtn);
+    tbL->addWidget(makeSep(m_toolbar));
+
     m_searchOpenBtn = makeTbBtn("🔍 Cerca", "Cerca (Ctrl+F)", m_toolbar);
     connect(m_searchOpenBtn, &QPushButton::clicked, this, &MainWindow::onSearch);
     tbL->addWidget(m_searchOpenBtn);
+
+    // Modalità presentazione
+    auto *presBtn = makeTbBtn("⛶ Presenta", "Modalità presentazione (F5)", m_toolbar);
+    connect(presBtn, &QPushButton::clicked, this, &MainWindow::onPresentationMode);
+    tbL->addWidget(presBtn);
 
     auto *printBtn = makeTbBtn("🖨 Stampa", "Stampa (Ctrl+P)", m_toolbar);
     connect(printBtn, &QPushButton::clicked, this, &MainWindow::onPrint);
@@ -436,6 +430,16 @@ void MainWindow::buildShortcuts()
     sc(QKeySequence::Copy,                 &MainWindow::onCopyText);
     sc(QKeySequence::SelectAll,            [this]{ if(auto*t=currentTab()) t->view->selectAll(); });
     sc({Qt::Key_F1},                       &MainWindow::onAbout);
+    sc({Qt::Key_F5},                       &MainWindow::onPresentationMode);
+    sc({Qt::Key_Escape},                   [this]{ if(isFullScreen()) onPresentationMode(); });
+    sc({Qt::CTRL|Qt::SHIFT|Qt::Key_T},     &MainWindow::onToggleTheme);
+    sc({Qt::CTRL|Qt::Key_D},               &MainWindow::onToggleDoublePage);
+    sc({Qt::ALT|Qt::Key_Left},             &MainWindow::onNavBack);
+    sc({Qt::ALT|Qt::Key_Right},            &MainWindow::onNavForward);
+    sc({Qt::CTRL|Qt::Key_M},              [this]{
+        if (auto *t = currentTab())
+            t->sidebar->addPersonalBookmark(t->view->currentPage()+1);
+    });
 
     // Switch tabs with Ctrl+1..9
     for (int i = 0; i < 9; ++i) {
@@ -509,6 +513,9 @@ void MainWindow::onTabChanged(int index)
 {
     if (index < 0 || index >= m_tabs.size()) return;
     m_currentTabIdx = index;
+    // Azzera cronologia navigazione per il nuovo tab
+    m_navHistory.clear();
+    m_navHistoryIdx = -1;
     switchToTab(index);
 }
 
@@ -561,6 +568,16 @@ void MainWindow::closeTab(int index)
     if (m_tabs.isEmpty()) return;
 
     auto *tab = m_tabs.takeAt(index);
+
+    // Salva zoom, pagina e segnalibri personali
+    if (!tab->path.isEmpty()) {
+        QSettings s("SfogliAccio", "SfogliAccio");
+        QString key = QString("file/%1").arg(QString(tab->path.toUtf8().toHex()));
+        s.setValue(key + "/zoom", tab->view->zoom());
+        s.setValue(key + "/page", tab->view->currentPage());
+        tab->sidebar->savePersonalBookmarks(tab->path);
+    }
+
     m_tabBar->removeTab(index);
     m_tabStack->removeWidget(tab->splitter);
     tab->splitter->deleteLater();
@@ -614,15 +631,50 @@ void MainWindow::openFile(const QString &path)
     connect(tab->doc, &PdfDocument::loadError, this,
             [this](const QString &msg){ QMessageBox::critical(this, "Errore", msg); });
 
+    // Gestione password
+    connect(tab->doc, &PdfDocument::passwordRequired, this, [this, tab]() {
+        bool ok;
+        QString pwd = QInputDialog::getText(this, "PDF protetto",
+            "Questo PDF è protetto da password:", QLineEdit::Password, "", &ok);
+        if (!ok || pwd.isEmpty()) {
+            delete tab->doc;
+            delete tab;
+            m_progressBar->setVisible(false);
+            return;
+        }
+        if (!tab->doc->loadWithPassword(tab->path, pwd)) {
+            delete tab->doc;
+            delete tab;
+            m_progressBar->setVisible(false);
+            return;
+        }
+        // Continua con l'apertura
+        finishOpenFile(tab);
+    });
+
     if (!tab->doc->load(path)) {
-        delete tab->doc; delete tab;
-        m_progressBar->setVisible(false);
+        if (!tab->doc->needsPassword()) {
+            delete tab->doc; delete tab;
+            m_progressBar->setVisible(false);
+        }
+        // Se needsPassword(), il segnale passwordRequired gestisce tutto
         return;
     }
 
+    finishOpenFile(tab);
+}
+
+void MainWindow::finishOpenFile(PdfTab *tab)
+{
+    const QString &path = tab->path;
     QFileInfo fi(path);
     tab->title = fi.fileName();
-    tab->zoom  = 1.0f;
+
+    // Ripristina zoom e pagina salvati per questo file
+    QSettings s("SfogliAccio", "SfogliAccio");
+    QString key = QString("file/%1").arg(QString(path.toUtf8().toHex()));
+    tab->zoom  = s.value(key + "/zoom", 0.0f).toFloat(); // 0 = primo apertura
+    tab->page  = s.value(key + "/page", 0).toInt();
 
     // Build splitter (sidebar + view)
     tab->splitter = new QSplitter(Qt::Horizontal, nullptr);
@@ -659,6 +711,24 @@ void MainWindow::openFile(const QString &path)
     // Load content
     tab->view->setDocument(tab->doc);
     tab->sidebar->setDocument(tab->doc, tab->doc->pageCount());
+    tab->sidebar->loadPersonalBookmarks(path);
+
+    // Ripristina zoom e pagina dopo il caricamento
+    if (tab->zoom > 0.01f) {
+        tab->view->setZoom(tab->zoom);
+    } else {
+        // Prima apertura — fit-width automatico
+        QTimer::singleShot(100, this, [this, tab]{
+            float fw = fitWidthZoom();
+            if (fw > 0.01f) {
+                tab->zoom = fw;
+                tab->view->setZoom(fw);
+                m_zoom->setZoom(fw);
+            }
+        });
+    }
+    if (tab->page > 0)
+        QTimer::singleShot(300, this, [tab]{ tab->view->scrollToPage(tab->page); });
 
     m_progressBar->setValue(60);
     addRecentFile(path);
@@ -732,23 +802,52 @@ void MainWindow::onSearchRequested(const QString &q)
 {
     auto *t = currentTab(); if (!t) return;
     if (q.length() < 2) {
+        t->doc->cancelSearch();
         t->view->clearSearchMatches();
         m_searchBar->clearInfo();
         m_searchMatchTotal = 0;
         return;
     }
-    setStatusMessage("Ricerca...");
-    auto matches = t->doc->search(q);
-    t->view->setSearchMatches(matches);
-    m_searchMatchTotal = t->view->totalMatchCount();
+
+    setStatusMessage("Ricerca in corso...");
+    m_searchBar->setMatchInfo(0, 0);
+    m_searchBar->setSearching(true);
+    t->view->clearSearchMatches();
+    m_searchMatchTotal = 0;
     m_searchMatchIdx   = 0;
-    m_searchBar->setMatchInfo(m_searchMatchTotal > 0 ? 1 : 0, m_searchMatchTotal);
-    if (m_searchMatchTotal > 0) {
-        t->view->jumpToMatch(0);
-        setStatusMessage(QString("%1 risultati").arg(m_searchMatchTotal));
-    } else {
-        setStatusMessage("Nessun risultato");
-    }
+
+    // Disconnetti segnali precedenti
+    disconnect(t->doc, &PdfDocument::searchProgress, nullptr, nullptr);
+    disconnect(t->doc, &PdfDocument::searchFinished, nullptr, nullptr);
+
+    // Aggiornamento progressivo durante la ricerca
+    connect(t->doc, &PdfDocument::searchProgress, this,
+            [this, t](int page, int total, const QList<SearchMatch> &partial) {
+        if (currentTab() != t) return;
+        setStatusMessage(QString("Ricerca... %1/%2").arg(page).arg(total));
+        t->view->setSearchMatches(partial);
+        m_searchMatchTotal = t->view->totalMatchCount();
+        m_searchBar->setMatchInfo(m_searchMatchTotal > 0 ? 1 : 0, m_searchMatchTotal);
+    }, Qt::QueuedConnection);
+
+    // Risultato finale
+    connect(t->doc, &PdfDocument::searchFinished, this,
+            [this, t](const QList<SearchMatch> &matches) {
+        if (currentTab() != t) return;
+        m_searchBar->setSearching(false);
+        t->view->setSearchMatches(matches);
+        m_searchMatchTotal = t->view->totalMatchCount();
+        m_searchMatchIdx   = 0;
+        m_searchBar->setMatchInfo(m_searchMatchTotal > 0 ? 1 : 0, m_searchMatchTotal);
+        if (m_searchMatchTotal > 0) {
+            t->view->jumpToMatch(0);
+            setStatusMessage(QString("%1 risultati").arg(m_searchMatchTotal));
+        } else {
+            setStatusMessage("Nessun risultato");
+        }
+    }, Qt::QueuedConnection);
+
+    t->doc->searchAsync(q);
 }
 
 void MainWindow::onSearchNext()
@@ -804,12 +903,25 @@ void MainWindow::onPrint()
 void MainWindow::onCurrentPageChanged(int page)
 {
     auto *t = currentTab(); if (!t) return;
-    // Only update if signal is from the current tab's view
     if (qobject_cast<PdfView*>(sender()) != t->view) return;
     t->page = page - 1;
     m_pageInput->setText(QString::number(page));
     m_sbPage->setText(QString("Pag. %1 / %2").arg(page).arg(t->view->pageCount()));
     t->sidebar->setCurrentPage(page);
+
+    // Registra nella cronologia (solo se non stiamo già navigando nella cronologia)
+    if (!m_navJumping) {
+        // Tronca la cronologia "futura" se siamo tornati indietro
+        if (m_navHistoryIdx < m_navHistory.size() - 1)
+            m_navHistory = m_navHistory.mid(0, m_navHistoryIdx + 1);
+        // Aggiungi solo se diversa dall'ultima
+        int p0 = page - 1;
+        if (m_navHistory.isEmpty() || m_navHistory.last() != p0) {
+            m_navHistory.append(p0);
+            if (m_navHistory.size() > 100) m_navHistory.removeFirst();
+            m_navHistoryIdx = m_navHistory.size() - 1;
+        }
+    }
 }
 
 void MainWindow::onPageInputReturn()
@@ -839,6 +951,151 @@ void MainWindow::onRenderProgress(int done, int total)
         if (auto *t = currentTab())
             setStatusMessage(QString("%1 pagine").arg(total));
     }
+}
+
+// ─── Modalità presentazione ───────────────────────────────────────────────────
+void MainWindow::onPresentationMode()
+{
+    auto *t = currentTab(); if (!t) return;
+
+    if (isFullScreen()) {
+        // Esci dalla presentazione
+        showNormal();
+        m_toolbar->setVisible(true);
+        m_titleBar->setVisible(true);
+        statusBar()->setVisible(true);
+        if (m_searchBar->isVisible()) m_searchBar->setVisible(true);
+        setStatusMessage("Modalità presentazione terminata");
+    } else {
+        // Entra in modalità presentazione
+        m_toolbar->setVisible(false);
+        m_titleBar->setVisible(false);
+        statusBar()->setVisible(false);
+        m_searchBar->setVisible(false);
+        showFullScreen();
+        setStatusMessage("Premi F5 o Esc per uscire dalla presentazione");
+    }
+}
+
+// ─── Tema chiaro/scuro ────────────────────────────────────────────────────────
+void MainWindow::onToggleTheme()
+{
+    m_lightTheme = !m_lightTheme;
+
+    if (m_lightTheme) {
+        qApp->setStyleSheet(QStringLiteral(R"(
+QWidget {
+    background-color: #f2f2f4;
+    color: #1a1a1e;
+    font-family: "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 13px;
+}
+QGraphicsView { background-color: #e0e0e4; }
+QScrollArea   { background-color: #e0e0e4; }
+QScrollArea > QWidget > QWidget { background-color: #e0e0e4; }
+QScrollBar:vertical   { background:#e8e8ec; width:9px;  border:none; }
+QScrollBar:horizontal { background:#e8e8ec; height:9px; border:none; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background:#b0b0bc; border-radius:4px; min-height:28px; min-width:28px;
+}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background:#888898; }
+QScrollBar::add-line:vertical,  QScrollBar::sub-line:vertical  { height:0; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; }
+QScrollBar::corner { background:#e8e8ec; }
+QPushButton {
+    background:#e4e4e8; color:#1a1a1e;
+    border:1px solid #c8c8d0; border-radius:4px;
+    padding:0 10px; font-size:13px;
+}
+QPushButton:hover   { background:#d4d4dc; border-color:#4d8cff; color:#1a1a1e; }
+QPushButton:checked { background:#ccd8ff; border-color:#4d8cff; color:#1a1a1e; }
+QPushButton:pressed { background:#bcc8f4; }
+QLineEdit {
+    background:#ffffff; color:#1a1a1e;
+    border:1px solid #c8c8d0; border-radius:4px; font-size:13px;
+    padding:2px 6px;
+}
+QLineEdit:focus { border-color:#4d8cff; }
+QLabel { background:transparent; color:#1a1a1e; }
+QSplitter::handle { background:#c8c8d0; }
+QMenu {
+    background:#ffffff; border:1px solid #c8c8d0;
+    border-radius:5px; padding:4px 0;
+}
+QMenu::item { padding:7px 28px 7px 14px; color:#444450; font-size:13px; }
+QMenu::item:selected { background:#e8e8f0; color:#1a1a1e; }
+QMenu::item:disabled { color:#a0a0ac; }
+QMenu::separator { height:1px; background:#e0e0e8; margin:3px 0; }
+QTabBar::tab {
+    background:#e4e4e8; color:#666670;
+    padding:0 14px; height:38px; min-width:100px; max-width:200px;
+    border-right:1px solid #c8c8d0; font-size:12px;
+}
+QTabBar::tab:selected { background:#f2f2f4; color:#4d8cff; border-bottom:2px solid #4d8cff; }
+QTabBar::tab:hover:!selected { background:#d8d8e0; color:#1a1a1e; }
+QTreeWidget {
+    background:#f2f2f4; border:none; color:#1a1a1e; font-size:12px;
+}
+QTreeWidget::item { padding:4px 8px; border:none; }
+QTreeWidget::item:hover    { background:#e4e4ec; }
+QTreeWidget::item:selected { background:#d0d8ff; color:#1a1a1e; border-left:2px solid #4d8cff; }
+QListWidget {
+    background:#f2f2f4; border:none; color:#1a1a1e;
+}
+QListWidget::item { padding:4px; border:1px solid transparent; border-radius:3px; }
+QListWidget::item:hover    { background:#e4e4ec; }
+QListWidget::item:selected { background:#d0d8ff; border-color:#4d8cff; }
+QStatusBar { background:#e4e4e8; border-top:1px solid #c8c8d0; }
+QMessageBox { background:#f2f2f4; }
+QMessageBox QPushButton {
+    background:#e4e4e8; border:1px solid #c8c8d0;
+    border-radius:4px; padding:7px 18px; color:#1a1a1e; min-width:80px;
+}
+QMessageBox QPushButton:hover { background:#d4d4dc; border-color:#4d8cff; }
+QToolTip {
+    background:#ffffff; color:#1a1a1e;
+    border:1px solid #c8c8d0; border-radius:4px; padding:5px 10px; font-size:12px;
+}
+QProgressBar {
+    background:#e0e0e8; border:none; border-radius:2px; height:3px;
+}
+QProgressBar::chunk { background:#4d8cff; border-radius:2px; }
+        )"));
+        setStatusMessage("Tema chiaro attivo");
+    } else {
+        qApp->setStyleSheet(Theme::globalStyleSheet());
+        setStatusMessage("Tema scuro attivo");
+    }
+}
+
+// ─── Cronologia navigazione ───────────────────────────────────────────────────
+void MainWindow::onNavBack()
+{
+    if (m_navHistoryIdx <= 0) return;
+    m_navHistoryIdx--;
+    m_navJumping = true;
+    if (auto *t = currentTab())
+        t->view->scrollToPage(m_navHistory[m_navHistoryIdx]);
+    m_navJumping = false;
+}
+
+void MainWindow::onNavForward()
+{
+    if (m_navHistoryIdx >= m_navHistory.size() - 1) return;
+    m_navHistoryIdx++;
+    m_navJumping = true;
+    if (auto *t = currentTab())
+        t->view->scrollToPage(m_navHistory[m_navHistoryIdx]);
+    m_navJumping = false;
+}
+
+// ─── Doppia pagina ────────────────────────────────────────────────────────────
+void MainWindow::onToggleDoublePage()
+{
+    m_doublePage = !m_doublePage;
+    if (auto *t = currentTab())
+        t->view->setDoublePageMode(m_doublePage);
+    setStatusMessage(m_doublePage ? "Doppia pagina attiva" : "Pagina singola");
 }
 
 // ─── Copy ─────────────────────────────────────────────────────────────────────

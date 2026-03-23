@@ -3,6 +3,7 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QPushButton>
+#include <QProgressBar>
 
 class SearchBar : public QWidget
 {
@@ -13,6 +14,7 @@ public:
     void setMatchInfo(int current, int total);
     void clearInfo();
     void focusInput();
+    void setSearching(bool on);   // mostra/nasconde spinner ricerca
 
 signals:
     void searchRequested(const QString &query);
@@ -24,9 +26,11 @@ protected:
     bool eventFilter(QObject *obj, QEvent *ev) override;
 
 private:
-    QLineEdit   *m_input;
-    QLabel      *m_countLabel;
-    QPushButton *m_prevBtn;
-    QPushButton *m_nextBtn;
-    QPushButton *m_closeBtn;
+    QLineEdit    *m_input;
+    QLabel       *m_countLabel;
+    QLabel       *m_spinnerLabel;
+    QPushButton  *m_prevBtn;
+    QPushButton  *m_nextBtn;
+    QPushButton  *m_closeBtn;
+    QProgressBar *m_progressBar;
 };

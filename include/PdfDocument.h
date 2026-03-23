@@ -41,6 +41,8 @@ public:
     ~PdfDocument();
 
     bool load(const QString &path);
+    bool loadWithPassword(const QString &path, const QString &password);
+    bool needsPassword() const { return m_needsPassword; }
     void close();
     bool isLoaded()   const { return m_loaded; }
     int  pageCount()  const { return m_pageCount; }
@@ -50,7 +52,13 @@ public:
     QImage   renderThumbnail(int index, int widthPx) const;
     PageText extractText(int pageIndex) const;
 
-    QList<SearchMatch>  search(const QString &query) const;
+    // Synchronous search (for small docs)
+    QList<SearchMatch> search(const QString &query) const;
+
+    // Async search — emits searchProgress per page, searchFinished at end
+    void searchAsync(const QString &query);
+    void cancelSearch();
+
     QList<BookmarkItem> bookmarks() const;
 
     QString metaString(const char *key) const;
@@ -63,6 +71,10 @@ public:
 
 signals:
     void loadError(const QString &msg);
+    void passwordRequired();
+    void searchProgress(int page, int total, const QList<SearchMatch> &partial);
+    void searchFinished(const QList<SearchMatch> &results);
+    void searchCancelled();
 
 private:
     void buildBookmarks(fz_outline *node, QList<BookmarkItem> &out, int level) const;
@@ -72,8 +84,8 @@ private:
     QString      m_path;
     int          m_pageCount = 0;
     bool         m_loaded    = false;
+    bool         m_needsPassword = false;
+    bool         m_searchCancelled = false;
 
-    // Single mutex: all MuPDF operations are serialised.
-    // Rendering is I/O + CPU bound but MuPDF is not re-entrant on a single ctx.
     mutable QMutex m_mutex;
 };

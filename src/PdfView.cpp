@@ -1,273 +1,278 @@
 #include "PdfView.h"
 #include "Theme.h"
-#include <QVBoxLayout>
 #include <QPainter>
 #include <QScrollBar>
-#include <QLabel>
 #include <QApplication>
 #include <QClipboard>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QWheelEvent>
-#include <QResizeEvent>
+#include <QNativeGestureEvent>
+#include <QGraphicsSceneMouseEvent>
+#include <QGraphicsSceneHoverEvent>
 #include <QRegularExpression>
 #include <QPropertyAnimation>
+#include <QTimer>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
+#include <QCursor>
+#include <cmath>
 
 // ════════════════════════════════════════════════════════════════════════════
-// TextLayer
+// PdfPageItem
 // ════════════════════════════════════════════════════════════════════════════
 
-TextLayer::TextLayer(QWidget *parent) : QWidget(parent)
+PdfPageItem::PdfPageItem(PdfDocument *doc, int pageIndex,
+                         float zoom, int rotation, bool inverted,
+                         QGraphicsItem *parent)
+    : QGraphicsItem(parent)
+    , m_doc(doc)
+    , m_pageIndex(pageIndex)
 {
-    setAttribute(Qt::WA_TranslucentBackground);
-    setMouseTracking(true);
-    setCursor(Qt::IBeamCursor);
-    // Let mouse events through to parent when nothing is happening,
-    // but capture them for selection
-    setFocusPolicy(Qt::ClickFocus);
+    setAcceptHoverEvents(true);
+
+    // Calcola dimensione dalla pageInfo
+    PageInfo info = doc->pageInfo(pageIndex);
+    float w = info.sizePt.width()  * zoom;
+    float h = info.sizePt.height() * zoom;
+    if (rotation == 90 || rotation == 270) std::swap(w, h);
+    m_size = QSizeF(qMax(1.0f, w), qMax(1.0f, h));
 }
 
-void TextLayer::setPageText(const PageText &chars, float zoom)
+QRectF PdfPageItem::boundingRect() const
 {
-    m_zoom = zoom;
+    return QRectF(0, 0, m_size.width(), m_size.height());
+}
+
+void PdfPageItem::paint(QPainter *painter,
+                        const QStyleOptionGraphicsItem *, QWidget *)
+{
+    // Sfondo bianco pagina
+    painter->fillRect(boundingRect(), Qt::white);
+
+    if (!m_pixmap.isNull()) {
+        painter->drawPixmap(0, 0, (int)m_size.width(), (int)m_size.height(),
+                            m_pixmap);
+    } else {
+        // Placeholder grigio con numero pagina
+        painter->setPen(QColor(Theme::TEXT_DIMMER));
+        painter->setFont(QFont("sans-serif", 12));
+        painter->drawText(boundingRect(), Qt::AlignCenter,
+                          QString("Pag. %1").arg(m_pageIndex + 1));
+    }
+
+    // Search highlights
+    for (int i = 0; i < m_highlights.size(); ++i) {
+        QColor c = (i == m_currentHL)
+            ? QColor(77, 168, 255, 140) : QColor(226, 245, 66, 100);
+        painter->fillRect(m_highlights[i], c);
+    }
+
+    // Text selection
+    if (!m_selIdx.isEmpty()) {
+        QRectF lineRect;
+        int prevIdx = -2;
+        for (int idx : m_selIdx) {
+            if (idx >= m_chars.size()) continue;
+            const QRectF &r = m_chars[idx].bbox;
+            if (prevIdx < 0) {
+                lineRect = r;
+            } else if (idx == prevIdx + 1 &&
+                       std::abs(r.top() - lineRect.top()) < r.height() * 0.5) {
+                lineRect = lineRect.united(r);
+            } else {
+                painter->fillRect(lineRect.adjusted(-1,0,1,0), m_selColor);
+                lineRect = r;
+            }
+            prevIdx = idx;
+        }
+        if (!lineRect.isNull())
+            painter->fillRect(lineRect.adjusted(-1,0,1,0), m_selColor);
+    }
+
+    // Bordo pagina
+    painter->setPen(QPen(QColor(Theme::BORDER), 0.5));
+    painter->drawRect(boundingRect().adjusted(0,0,-0.5,-0.5));
+}
+
+void PdfPageItem::requestRender(float zoom, int rotation, bool inverted)
+{
+    if (m_renderPending) return;
+    if (!m_pixmap.isNull() &&
+        qAbs(m_renderedZoom - zoom) < 0.001f &&
+        m_renderedRotation == rotation &&
+        m_renderedInverted == inverted) return;
+
+    m_renderPending = true;
+    auto *doc = m_doc;
+    int idx   = m_pageIndex;
+
+    auto *watcher = new QFutureWatcher<QImage>();
+    QObject::connect(watcher, &QFutureWatcher<QImage>::finished,
+                     this, [this, watcher, zoom, rotation, inverted]() {
+        QImage img = watcher->result();
+        watcher->deleteLater();
+        m_renderPending = false;
+        if (!img.isNull()) {
+            m_pixmap          = QPixmap::fromImage(img);
+            m_renderedZoom    = zoom;
+            m_renderedRotation = rotation;
+            m_renderedInverted = inverted;
+            // Aggiorna dimensione reale
+            m_size = QSizeF(img.width(), img.height());
+            prepareGeometryChange();
+            update();
+            emit rendered(m_pageIndex);
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([doc, idx, zoom, rotation, inverted]() -> QImage {
+        QImage img = doc->renderPage(idx, zoom, rotation);
+        if (inverted && !img.isNull()) img.invertPixels();
+        return img;
+    }));
+}
+
+// ── Text selection ────────────────────────────────────────────────────────────
+void PdfPageItem::setPageText(const PageText &chars, float zoom)
+{
     m_chars.clear();
-    // Scale bboxes from PDF points to widget pixels
     for (const TextChar &tc : chars) {
         TextChar scaled;
-        scaled.bbox = QRectF(
-            tc.bbox.x() * zoom,
-            tc.bbox.y() * zoom,
-            tc.bbox.width()  * zoom,
-            tc.bbox.height() * zoom);
+        scaled.bbox = QRectF(tc.bbox.x() * zoom, tc.bbox.y() * zoom,
+                             tc.bbox.width() * zoom, tc.bbox.height() * zoom);
         scaled.ch = tc.ch;
         m_chars.append(scaled);
     }
     m_selIdx.clear();
-    m_anchorIdx  = -1;
-    m_currentIdx = -1;
+    m_anchorIdx = -1;
     update();
 }
 
-void TextLayer::clear()
-{
-    m_chars.clear();
-    m_selIdx.clear();
-    m_anchorIdx  = -1;
-    m_currentIdx = -1;
-    update();
-}
-
-void TextLayer::selectAll()
-{
-    m_selIdx.clear();
-    for (int i = 0; i < m_chars.size(); ++i)
-        m_selIdx.append(i);
-    emit selectionChanged();
-    update();
-}
-
-QString TextLayer::selectedText() const
+QString PdfPageItem::selectedText() const
 {
     if (m_selIdx.isEmpty()) return {};
-
-    // Collect selected chars in order
     QList<const TextChar*> sel;
-    for (int idx : m_selIdx) {
+    for (int idx : m_selIdx)
         if (idx < m_chars.size() && m_chars[idx].ch != "\n")
             sel.append(&m_chars[idx]);
-    }
     if (sel.isEmpty()) return {};
 
     QString result;
     float prevBottom = sel.first()->bbox.bottom();
     float prevRight  = sel.first()->bbox.right();
-    float lineHeight = sel.first()->bbox.height();
+    float lineH      = sel.first()->bbox.height();
 
     for (const TextChar *tc : sel) {
-        float top    = tc->bbox.top();
-        float left   = tc->bbox.left();
-        float height = tc->bbox.height();
-        if (height > 0) lineHeight = height;
-
-        // New line: vertical gap larger than half a line height
-        float vertGap = top - prevBottom;
-        if (vertGap > lineHeight * 0.3f) {
+        if (tc->bbox.height() > 0) lineH = tc->bbox.height();
+        float vertGap = tc->bbox.top() - prevBottom;
+        if (vertGap > lineH * 0.3f) {
             result += "\n";
-            prevRight = left;
         } else {
-            // Same line: if there's a horizontal gap larger than ~half a space, add a space
-            float hGap = left - prevRight;
-            if (hGap > lineHeight * 0.25f && !result.endsWith(' ') && tc->ch != " ")
+            float hGap = tc->bbox.left() - prevRight;
+            if (hGap > lineH * 0.25f && !result.endsWith(' ') && tc->ch != " ")
                 result += " ";
         }
-
         if (tc->ch != " " || !result.endsWith(' '))
             result += tc->ch;
-
         prevBottom = tc->bbox.bottom();
         prevRight  = tc->bbox.right();
     }
-
-    // Clean up: collapse multiple spaces, trim trailing spaces per line
     QStringList lines = result.split('\n');
     for (QString &line : lines) {
-        // Collapse multiple spaces
         line.replace(QRegularExpression("  +"), " ");
         line = line.trimmed();
     }
-    // Remove trailing empty lines
-    while (!lines.isEmpty() && lines.last().isEmpty())
-        lines.removeLast();
-
+    while (!lines.isEmpty() && lines.last().isEmpty()) lines.removeLast();
     return lines.join('\n');
 }
 
-int TextLayer::charAt(const QPoint &pt) const
+void PdfPageItem::selectAll()
 {
-    // Find the char whose bbox contains pt, with a small vertical tolerance
+    m_selIdx.clear();
+    for (int i = 0; i < m_chars.size(); ++i) m_selIdx.append(i);
+    update();
+}
+
+void PdfPageItem::clearSelection()
+{
+    m_selIdx.clear();
+    m_anchorIdx = -1;
+    m_pressing  = false;
+    update();
+}
+
+int PdfPageItem::charAt(const QPointF &pt) const
+{
     for (int i = 0; i < m_chars.size(); ++i) {
-        const QRectF &r = m_chars[i].bbox;
-        // Expand bbox slightly for easier clicking
-        QRectF expanded = r.adjusted(-1, -2, 1, 2);
-        if (expanded.contains(pt)) return i;
+        if (m_chars[i].bbox.adjusted(-1,-2,1,2).contains(pt)) return i;
     }
-    // If no exact hit, find closest char on the same line (same y band)
-    int best = -1;
-    float bestDist = 1e9f;
+    int best = -1; float bestDist = 1e9f;
     for (int i = 0; i < m_chars.size(); ++i) {
         const QRectF &r = m_chars[i].bbox;
-        if (pt.y() >= r.top() - 2 && pt.y() <= r.bottom() + 2) {
-            float dist = qAbs((float)pt.x() - (float)r.center().x());
+        if (pt.y() >= r.top()-2 && pt.y() <= r.bottom()+2) {
+            float dist = std::abs((float)pt.x() - (float)r.center().x());
             if (dist < bestDist) { bestDist = dist; best = i; }
         }
     }
     return best;
 }
 
-void TextLayer::updateSelection(int from, int to)
+void PdfPageItem::updateSelection(int from, int to)
 {
     if (from < 0 || to < 0) return;
     m_selIdx.clear();
-    int start = qMin(from, to);
-    int end   = qMax(from, to);
-    for (int i = start; i <= end; ++i)
-        m_selIdx.append(i);
-    emit selectionChanged();
+    int s = qMin(from,to), e = qMax(from,to);
+    for (int i = s; i <= e; ++i) m_selIdx.append(i);
     update();
 }
 
-void TextLayer::mousePressEvent(QMouseEvent *e)
+void PdfPageItem::mousePressEvent(QGraphicsSceneMouseEvent *e)
 {
     if (e->button() == Qt::LeftButton) {
         m_pressing  = true;
-        int idx     = charAt(e->pos());
-        m_anchorIdx = idx;
+        m_anchorIdx = charAt(e->pos());
         m_selIdx.clear();
-        emit selectionChanged();
         update();
     }
 }
 
-void TextLayer::mouseMoveEvent(QMouseEvent *e)
+void PdfPageItem::mouseMoveEvent(QGraphicsSceneMouseEvent *e)
 {
     if (!m_pressing) return;
     int idx = charAt(e->pos());
-    if (idx >= 0 && idx != m_currentIdx) {
-        m_currentIdx = idx;
-        updateSelection(m_anchorIdx, m_currentIdx);
-    }
+    if (idx >= 0) updateSelection(m_anchorIdx, idx);
 }
 
-void TextLayer::mouseReleaseEvent(QMouseEvent *e)
+void PdfPageItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *e)
 {
     if (e->button() == Qt::LeftButton) {
         m_pressing = false;
-        // Auto-copy to clipboard selection (like Linux convention)
         QString sel = selectedText();
         if (!sel.isEmpty())
             QApplication::clipboard()->setText(sel, QClipboard::Selection);
     }
 }
 
-void TextLayer::mouseDoubleClickEvent(QMouseEvent *e)
+void PdfPageItem::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *e)
 {
     if (e->button() != Qt::LeftButton) return;
     int idx = charAt(e->pos());
     if (idx < 0 || idx >= m_chars.size()) return;
-
-    // Select the whole word around idx
-    // Walk back to word start
     int start = idx;
-    while (start > 0 && m_chars[start-1].ch != " " && m_chars[start-1].ch != "\n")
-        --start;
-    // Walk forward to word end
+    while (start > 0 && m_chars[start-1].ch != " " && m_chars[start-1].ch != "\n") --start;
     int end = idx;
-    while (end < m_chars.size()-1 && m_chars[end+1].ch != " " && m_chars[end+1].ch != "\n")
-        ++end;
+    while (end < m_chars.size()-1 && m_chars[end+1].ch != " " && m_chars[end+1].ch != "\n") ++end;
     updateSelection(start, end);
 }
 
-void TextLayer::paintEvent(QPaintEvent *)
+void PdfPageItem::hoverMoveEvent(QGraphicsSceneHoverEvent *)
 {
-    if (m_selIdx.isEmpty()) return;
-    QPainter p(this);
-    p.setPen(Qt::NoPen);
-
-    // Build merged selection rects for cleaner rendering
-    // Group consecutive chars per visual line, merge their bboxes
-    QRectF lineRect;
-    int    prevIdx = -2;
-    for (int idx : m_selIdx) {
-        if (idx >= m_chars.size()) continue;
-        const QRectF &r = m_chars[idx].bbox;
-        if (prevIdx < 0) {
-            lineRect = r;
-        } else if (idx == prevIdx + 1 &&
-                   qAbs(r.top() - lineRect.top()) < r.height() * 0.5) {
-            // Same line — extend rect
-            lineRect = lineRect.united(r);
-        } else {
-            // New line — flush previous
-            p.fillRect(lineRect.adjusted(-1,0,1,0), m_highlightColor);
-            lineRect = r;
-        }
-        prevIdx = idx;
-    }
-    if (!lineRect.isNull())
-        p.fillRect(lineRect.adjusted(-1,0,1,0), m_highlightColor);
+    if (!m_chars.isEmpty()) scene()->views().first()->setCursor(Qt::IBeamCursor);
+    else scene()->views().first()->setCursor(Qt::ArrowCursor);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// PageWidget
-// ════════════════════════════════════════════════════════════════════════════
-
-PageWidget::PageWidget(QWidget *parent) : QWidget(parent)
-{
-    setAutoFillBackground(false);
-    m_textLayer = new TextLayer(this);
-    m_textLayer->hide(); // shown after text is loaded
-}
-
-void PageWidget::setPixmap(const QPixmap &px)
-{
-    m_pixmap = px;
-    resize(px.size());
-    setMinimumSize(px.size());
-    setMaximumSize(px.size());
-    m_textLayer->resize(px.size());
-    update();
-}
-
-void PageWidget::setPageText(const PageText &chars, float zoom)
-{
-    m_textLayer->setPageText(chars, zoom);
-    m_textLayer->show();
-    m_textLayer->raise();
-}
-
-void PageWidget::setHighlights(const QList<QRectF> &rects, float zoom)
+// ── Highlights ────────────────────────────────────────────────────────────────
+void PdfPageItem::setHighlights(const QList<QRectF> &rects, float zoom)
 {
     m_highlights.clear();
     for (const QRectF &r : rects)
@@ -276,73 +281,220 @@ void PageWidget::setHighlights(const QList<QRectF> &rects, float zoom)
     update();
 }
 
-void PageWidget::setCurrentHighlight(int idx)
+void PdfPageItem::setCurrentHighlight(int idx) { m_currentHL = idx; update(); }
+void PdfPageItem::clearHighlights() { m_highlights.clear(); m_currentHL = -1; update(); }
+
+// ════════════════════════════════════════════════════════════════════════════
+// PdfScene
+// ════════════════════════════════════════════════════════════════════════════
+
+PdfScene::PdfScene(QObject *parent) : QGraphicsScene(parent) {}
+
+void PdfScene::setDocument(PdfDocument *doc, float zoom, int rotation,
+                            bool inverted, bool doublePage)
 {
-    m_currentHL = idx;
-    update();
-}
+    QGraphicsScene::clear();
+    m_items.clear();
+    m_doc       = doc;
+    m_zoom      = zoom;
+    m_rotation  = rotation;
+    m_inverted  = inverted;
+    m_doublePage = doublePage;
+    if (!doc || !doc->isLoaded()) return;
 
-void PageWidget::clearHighlights()
-{
-    m_highlights.clear();
-    m_currentHL = -1;
-    update();
-}
+    int total = doc->pageCount();
 
-QString PageWidget::selectedText()  const { return m_textLayer->selectedText(); }
-void    PageWidget::selectAll()           { m_textLayer->selectAll(); }
-bool    PageWidget::hasSelection()  const { return m_textLayer->hasSelection(); }
+    if (doublePage) {
+        // Modalità doppia pagina: coppie affiancate
+        float y = (float)PAGE_GAP;
+        for (int i = 0; i < total; i += 2) {
+            auto *left  = new PdfPageItem(doc, i, zoom, rotation, inverted);
+            left->setSelectionColor(m_selColor);
+            addItem(left);
+            m_items.append(left);
+            connect(left, &PdfPageItem::rendered, this, [this](int idx){
+                emit renderProgress(idx+1, m_items.size());
+            });
 
-void PageWidget::resizeEvent(QResizeEvent *e)
-{
-    m_textLayer->resize(e->size());
-}
+            float rowH = left->boundingRect().height();
+            float rowW = left->boundingRect().width();
 
-void PageWidget::paintEvent(QPaintEvent *)
-{
-    QPainter p(this);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
-
-    if (m_pixmap.isNull()) {
-        p.fillRect(rect(), QColor(Theme::SURFACE2));
-        p.setPen(QColor(Theme::TEXT_DIMMER));
-        p.drawText(rect(), Qt::AlignCenter, "...");
-        return;
+            if (i+1 < total) {
+                auto *right = new PdfPageItem(doc, i+1, zoom, rotation, inverted);
+                right->setSelectionColor(m_selColor);
+                addItem(right);
+                m_items.append(right);
+                connect(right, &PdfPageItem::rendered, this, [this](int idx){
+                    emit renderProgress(idx+1, m_items.size());
+                });
+                // Posiziona destra accanto a sinistra
+                left->setPos(PAGE_GAP, y);
+                right->setPos(PAGE_GAP + rowW + PAGE_GAP, y);
+                rowH = qMax(rowH, (float)right->boundingRect().height());
+                rowW = rowW + PAGE_GAP + right->boundingRect().width();
+            } else {
+                left->setPos(PAGE_GAP, y);
+            }
+            y += rowH + PAGE_GAP;
+        }
+        // Centra
+        float maxW = 0;
+        for (auto *item : m_items)
+            maxW = qMax(maxW, (float)(item->pos().x() + item->boundingRect().width()));
+        setSceneRect(0, 0, maxW + PAGE_GAP, y);
+    } else {
+        // Modalità singola pagina
+        float y = (float)PAGE_GAP;
+        float maxW = 0;
+        for (int i = 0; i < total; ++i) {
+            auto *item = new PdfPageItem(doc, i, zoom, rotation, inverted);
+            item->setPos(PAGE_GAP, y);
+            item->setSelectionColor(m_selColor);
+            addItem(item);
+            m_items.append(item);
+            connect(item, &PdfPageItem::rendered, this, [this](int idx){
+                emit renderProgress(idx+1, m_items.size());
+            });
+            maxW = qMax(maxW, (float)item->boundingRect().width());
+            y += item->boundingRect().height() + PAGE_GAP;
+        }
+        // Centra orizzontalmente
+        for (auto *item : m_items)
+            item->setX((maxW - item->boundingRect().width()) / 2.0f + PAGE_GAP);
+        setSceneRect(0, 0, maxW + PAGE_GAP*2, y);
     }
-    p.drawPixmap(0, 0, m_pixmap);
+}
 
-    // Search highlights painted below text layer
-    for (int i = 0; i < m_highlights.size(); ++i) {
-        QColor c = (i == m_currentHL)
-            ? QColor(77,168,255,120) : QColor(226,245,66,90);
-        p.fillRect(m_highlights[i], c);
+void PdfScene::clear()
+{
+    QGraphicsScene::clear();
+    m_items.clear();
+}
+
+PdfPageItem *PdfScene::pageItem(int index) const
+{
+    if (index < 0 || index >= m_items.size()) return nullptr;
+    return m_items[index];
+}
+
+QRectF PdfScene::pageRect(int index) const
+{
+    auto *item = pageItem(index);
+    if (!item) return {};
+    return QRectF(item->pos(), item->boundingRect().size());
+}
+
+void PdfScene::setZoom(float zoom)
+{
+    m_zoom = zoom;
+    if (m_doc) setDocument(m_doc, zoom, m_rotation, m_inverted, m_doublePage);
+}
+
+void PdfScene::setRotation(int deg)
+{
+    m_rotation = deg;
+    if (m_doc) setDocument(m_doc, m_zoom, deg, m_inverted, m_doublePage);
+}
+
+void PdfScene::setInverted(bool inv)
+{
+    m_inverted = inv;
+    if (m_doc) setDocument(m_doc, m_zoom, m_rotation, inv, m_doublePage);
+}
+
+void PdfScene::setSearchMatches(const QList<SearchMatch> &matches)
+{
+    clearSearchMatches();
+    m_totalMatches = 0;
+    for (const SearchMatch &sm : matches) {
+        if (sm.pageIndex < m_items.size()) {
+            m_items[sm.pageIndex]->setHighlights(sm.rects, m_zoom);
+            m_totalMatches += sm.rects.size();
+        }
     }
+}
+
+void PdfScene::clearSearchMatches()
+{
+    for (auto *item : m_items) item->clearHighlights();
+    m_totalMatches = 0;
+}
+
+void PdfScene::setCurrentHighlight(int globalIdx)
+{
+    int count = 0;
+    for (auto *item : m_items) {
+        // reset current on all
+        item->setCurrentHighlight(-1);
+    }
+    count = 0;
+    for (auto *item : m_items) {
+        int n = item->boundingRect().isEmpty() ? 0 : 0;
+        Q_UNUSED(n);
+        // Recount via match rects stored in item
+        // We'll handle this in PdfView::jumpToMatch
+        Q_UNUSED(globalIdx); Q_UNUSED(count);
+        break;
+    }
+}
+
+void PdfScene::setSelectionColor(const QColor &c)
+{
+    m_selColor = c;
+    for (auto *item : m_items) item->setSelectionColor(c);
+}
+
+QString PdfScene::selectedText() const
+{
+    QString text;
+    for (auto *item : m_items) {
+        QString s = item->selectedText();
+        if (!s.isEmpty()) text += s;
+    }
+    return text;
+}
+
+void PdfScene::selectAll(int pageIndex)
+{
+    if (pageIndex >= 0 && pageIndex < m_items.size())
+        m_items[pageIndex]->selectAll();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // PdfView
 // ════════════════════════════════════════════════════════════════════════════
 
-PdfView::PdfView(QWidget *parent) : QScrollArea(parent)
+PdfView::PdfView(QWidget *parent) : QGraphicsView(parent)
 {
+    m_scene = new PdfScene(this);
+    setScene(m_scene);
+
     setFrameShape(QFrame::NoFrame);
+    setBackgroundBrush(QColor(Theme::BG));
+    setRenderHint(QPainter::SmoothPixmapTransform);
+    setRenderHint(QPainter::Antialiasing);
+    setDragMode(QGraphicsView::NoDrag);
+    setResizeAnchor(QGraphicsView::AnchorViewCenter);
+    setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-    setStyleSheet(QString("QScrollArea{background:%1;border:none;}").arg(Theme::BG));
+    setOptimizationFlag(QGraphicsView::DontSavePainterState);
+    setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
 
-    m_inner = new QWidget(this);
-    m_inner->setStyleSheet(QString("background:%1;").arg(Theme::BG));
-    auto *lay = new QVBoxLayout(m_inner);
-    lay->setContentsMargins(24,24,24,24);
-    lay->setSpacing(16);
-    lay->setAlignment(Qt::AlignHCenter);
-    setWidget(m_inner);
-    setWidgetResizable(true);
+    // Debounce timer per il controllo visibilità
+    m_visTimer = new QTimer(this);
+    m_visTimer->setSingleShot(true);
+    m_visTimer->setInterval(50);
+    connect(m_visTimer, &QTimer::timeout, this, &PdfView::onVisibilityCheck);
 
-    connect(verticalScrollBar(), &QScrollBar::valueChanged,
-            this, &PdfView::onScrollChanged);
+    connect(m_scene, &PdfScene::renderProgress, this, &PdfView::renderProgress);
 
     setFocusPolicy(Qt::StrongFocus);
+    viewport()->setAttribute(Qt::WA_AcceptTouchEvents);
 }
+
+PdfView::~PdfView() {}
 
 void PdfView::setDocument(PdfDocument *doc)
 {
@@ -350,217 +502,221 @@ void PdfView::setDocument(PdfDocument *doc)
     m_currentPage = 0;
     m_matchRects.clear();
     m_totalMatches = 0;
-    buildPageWidgets();
+    m_scene->setDocument(doc, m_zoom, m_rotation, m_inverted, m_doublePage);
+    applyZoomTransform();
+    m_visTimer->start();
 }
 
-void PdfView::buildPageWidgets()
+void PdfView::applyZoomTransform()
 {
-    for (auto *pw : m_pages) pw->parentWidget()->deleteLater();
-    m_pages.clear();
-
-    auto *lay = qobject_cast<QVBoxLayout*>(m_inner->layout());
-    while (lay->count()) delete lay->takeAt(0);
-
-    if (!m_doc || !m_doc->isLoaded()) return;
-
-    int total = m_doc->pageCount();
-    m_pages.reserve(total);
-
-    for (int i = 0; i < total; ++i) {
-        auto *block = new QWidget(m_inner);
-        block->setStyleSheet("background:transparent;");
-        auto *blay = new QVBoxLayout(block);
-        blay->setContentsMargins(0,0,0,0);
-        blay->setSpacing(4);
-
-        auto *pw = new PageWidget(block);
-        pw->setStyleSheet("background:white;");
-        // Forward selection changes from text layer
-        connect(pw->textLayer(), &TextLayer::selectionChanged,
-                this, [this]{ emit hasSelectionChanged(false); /* placeholder */ });
-
-        auto *lbl = new QLabel(QString::number(i+1), block);
-        lbl->setAlignment(Qt::AlignCenter);
-        lbl->setStyleSheet(
-            QString("color:%1;font-size:10px;background:transparent;")
-            .arg(Theme::TEXT_DIMMER));
-
-        blay->addWidget(pw, 0, Qt::AlignHCenter);
-        blay->addWidget(lbl, 0, Qt::AlignHCenter);
-        lay->addWidget(block, 0, Qt::AlignHCenter);
-        m_pages.append(pw);
-    }
-
-    for (int i = 0; i < total; ++i) {
-        renderPageAsync(i);
-        loadTextAsync(i);
-    }
-}
-
-void PdfView::renderPageAsync(int index)
-{
-    if (!m_doc) return;
-    float zoom = m_zoom; int rotation = m_rotation; bool inv = m_inverted;
-    auto *doc = m_doc;
-
-    auto *watcher = new QFutureWatcher<QImage>(this);
-    connect(watcher, &QFutureWatcher<QImage>::finished,
-            this, [this, index, watcher]() {
-        QImage img = watcher->result();
-        if (!img.isNull() && index < m_pages.size()) {
-            m_pages[index]->setPixmap(QPixmap::fromImage(img));
-            if (index < m_matchRects.size() && !m_matchRects[index].isEmpty())
-                m_pages[index]->setHighlights(m_matchRects[index], m_zoom);
-            emit renderProgress(index+1, m_pages.size());
-        }
-        watcher->deleteLater();
-    });
-    watcher->setFuture(QtConcurrent::run([doc,index,zoom,rotation,inv]()->QImage{
-        QImage img = doc->renderPage(index, zoom, rotation);
-        if (inv && !img.isNull()) img.invertPixels();
-        return img;
-    }));
-}
-
-void PdfView::loadTextAsync(int index)
-{
-    if (!m_doc) return;
-    auto *doc = m_doc;
-    float zoom = m_zoom;
-
-    auto *watcher = new QFutureWatcher<PageText>(this);
-    connect(watcher, &QFutureWatcher<PageText>::finished,
-            this, [this, index, watcher]() {
-        PageText text = watcher->result();
-        if (index < m_pages.size())
-            m_pages[index]->setPageText(text, m_zoom);
-        watcher->deleteLater();
-    });
-    watcher->setFuture(QtConcurrent::run([doc, index, zoom]()->PageText{
-        Q_UNUSED(zoom)
-        return doc->extractText(index);
-    }));
+    // Con QGraphicsView lo zoom si applica come trasformazione della vista
+    // Le coordinate della scena sono in pixel @zoom=1, la view scala tutto
+    setTransform(QTransform::fromScale(1.0, 1.0));
 }
 
 void PdfView::rerender()
 {
     if (!m_doc) return;
-    for (int i = 0; i < m_pages.size(); ++i) {
-        renderPageAsync(i);
-        loadTextAsync(i);
-    }
+    m_scene->setDocument(m_doc, m_zoom, m_rotation, m_inverted, m_doublePage);
+    m_visTimer->start();
 }
 
-void PdfView::setZoom(float zoom)
+// ── Zoom ──────────────────────────────────────────────────────────────────────
+void PdfView::setZoom(float z)
 {
-    if (qAbs(zoom - m_zoom) < 0.001f) return;
-    m_zoom = zoom;
-    rerender();
+    if (qAbs(z - m_zoom) < 0.001f) return;
+    m_zoom = z;
+    // Ricrea la scena al nuovo zoom (le pagine vengono ri-renderizzate alla nuova risoluzione)
+    m_scene->setZoom(z);
+    m_visTimer->start();
 }
 
 void PdfView::setRotation(int deg)
 {
     m_rotation = ((deg%360)+360)%360;
-    rerender();
+    m_scene->setRotation(m_rotation);
+    m_visTimer->start();
 }
 
 void PdfView::setInverted(bool inv)
 {
     if (m_inverted == inv) return;
     m_inverted = inv;
+    m_scene->setInverted(inv);
+    m_visTimer->start();
+}
+
+void PdfView::setDoublePageMode(bool on)
+{
+    m_doublePage = on;
     rerender();
 }
 
+// ── Navigation ────────────────────────────────────────────────────────────────
 void PdfView::scrollToPage(int index)
 {
-    if (index < 0 || index >= m_pages.size()) return;
-    QWidget *block = m_pages[index]->parentWidget();
-    if (block) verticalScrollBar()->setValue(block->mapTo(m_inner, QPoint(0,0)).y());
+    if (!m_scene || index < 0 || index >= m_scene->pageCount()) return;
+    QRectF r = m_scene->pageRect(index);
+    // Scroll animato alla pagina
+    auto *anim = new QPropertyAnimation(verticalScrollBar(), "value", this);
+    anim->setDuration(200);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    anim->setStartValue(verticalScrollBar()->value());
+    int target = (int)(r.top() - 20);
+    anim->setEndValue(qMax(0, target));
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
+
     m_currentPage = index;
-    emit currentPageChanged(index+1);
+    emit currentPageChanged(index + 1);
 }
 
-int PdfView::pageCount() const { return m_doc ? m_doc->pageCount() : 0; }
-
-// ── Text operations ───────────────────────────────────────────────────────────
-QString PdfView::selectedText() const
+int PdfView::pageCount() const
 {
-    QString text;
-    for (auto *pw : m_pages) {
-        QString s = pw->selectedText();
-        if (!s.isEmpty()) text += s;
+    return m_scene ? m_scene->pageCount() : 0;
+}
+
+// ── Visibility check — lazy rendering ─────────────────────────────────────────
+void PdfView::onVisibilityCheck()
+{
+    checkVisiblePages();
+}
+
+void PdfView::checkVisiblePages()
+{
+    if (!m_scene || !m_doc) return;
+    constexpr int BUFFER = 2;
+
+    QRectF visible = mapToScene(viewport()->rect()).boundingRect();
+    visible.adjust(0, -viewport()->height()*BUFFER, 0, viewport()->height()*BUFFER);
+
+    int total = m_scene->pageCount();
+    for (int i = 0; i < total; ++i) {
+        auto *item = m_scene->pageItem(i);
+        if (!item) continue;
+        QRectF itemRect = item->mapToScene(item->boundingRect()).boundingRect();
+        if (itemRect.intersects(visible)) {
+            if (!item->isRendered()) {
+                item->requestRender(m_zoom, m_rotation, m_inverted);
+                // Carica anche il testo
+                auto *doc = m_doc;
+                int idx   = i;
+                float zoom = m_zoom;
+                auto *watcher = new QFutureWatcher<PageText>(this);
+                connect(watcher, &QFutureWatcher<PageText>::finished,
+                        this, [this, idx, watcher, zoom]() {
+                    PageText text = watcher->result();
+                    watcher->deleteLater();
+                    auto *it = m_scene->pageItem(idx);
+                    if (it) it->setPageText(text, zoom);
+                });
+                watcher->setFuture(QtConcurrent::run([doc, idx]() -> PageText {
+                    return doc->extractText(idx);
+                }));
+            }
+        }
     }
-    return text;
-}
 
-void PdfView::copySelection() const
-{
-    QString text = selectedText();
-    if (!text.isEmpty())
-        QApplication::clipboard()->setText(text);
-}
-
-void PdfView::selectAll()
-{
-    // Select all on current visible page
-    if (m_currentPage >= 0 && m_currentPage < m_pages.size())
-        m_pages[m_currentPage]->selectAll();
-}
-
-void PdfView::setSelectionColor(const QColor &c)
-{
-    for (auto *pw : m_pages)
-        pw->textLayer()->setHighlightColor(c);
-}
-
-// ── Keyboard ──────────────────────────────────────────────────────────────────
-void PdfView::keyPressEvent(QKeyEvent *e)
-{
-    if ((e->modifiers() & Qt::ControlModifier)) {
-        if (e->key() == Qt::Key_C) { copySelection(); return; }
-        if (e->key() == Qt::Key_A) { selectAll();     return; }
+    // Aggiorna pagina corrente
+    QPointF center = mapToScene(viewport()->rect().center());
+    int best = 0; float bestDist = 1e9f;
+    for (int i = 0; i < total; ++i) {
+        auto *item = m_scene->pageItem(i);
+        if (!item) continue;
+        float dist = std::abs((float)(item->pos().y() + item->boundingRect().height()/2) - (float)center.y());
+        if (dist < bestDist) { bestDist = dist; best = i; }
     }
-    QScrollArea::keyPressEvent(e);
+    if (best != m_currentPage) {
+        m_currentPage = best;
+        emit currentPageChanged(best + 1);
+    }
 }
 
-// ── Ctrl+scroll zoom ─────────────────────────────────────────────────────────
+void PdfView::scrollContentsBy(int dx, int dy)
+{
+    QGraphicsView::scrollContentsBy(dx, dy);
+    m_visTimer->start();
+}
+
+void PdfView::resizeEvent(QResizeEvent *e)
+{
+    QGraphicsView::resizeEvent(e);
+    m_visTimer->start();
+}
+
+// ── Wheel zoom ────────────────────────────────────────────────────────────────
 void PdfView::wheelEvent(QWheelEvent *e)
 {
     if (e->modifiers() & Qt::ControlModifier) {
         e->accept();
         float delta = e->angleDelta().y();
         if (qAbs(delta) < 1.0f) return;
-        float factor  = (delta > 0) ? 1.10f : (1.0f/1.10f);
+        float factor  = (delta > 0) ? 1.12f : (1.0f/1.12f);
         float newZoom = qBound(0.1f, m_zoom * factor, 6.0f);
         if (qAbs(newZoom - m_zoom) > 0.005f)
             emit zoomChangeRequested(newZoom);
     } else {
-        QScrollArea::wheelEvent(e);
+        QGraphicsView::wheelEvent(e);
     }
 }
 
-void PdfView::onScrollChanged()
+// ── Pinch zoom — QGraphicsView handles this natively via scale transform ───────
+bool PdfView::event(QEvent *e)
 {
-    if (m_pages.isEmpty()) return;
-    int vpTop = verticalScrollBar()->value();
-    int best = 0, bestDist = INT_MAX;
-    for (int i = 0; i < m_pages.size(); ++i) {
-        QWidget *block = m_pages[i]->parentWidget();
-        if (!block) continue;
-        int dist = qAbs(block->mapTo(m_inner, QPoint(0,0)).y() - vpTop);
-        if (dist < bestDist) { bestDist = dist; best = i; }
+    if (e->type() == QEvent::NativeGesture) {
+        auto *ge = static_cast<QNativeGestureEvent*>(e);
+
+        if (ge->gestureType() == Qt::BeginNativeGesture) {
+            m_pinchActive    = true;
+            m_pinchAccum     = 1.0f;
+            m_pinchStartZoom = m_zoom;
+            e->accept();
+            return true;
+        }
+
+        if (ge->gestureType() == Qt::ZoomNativeGesture && m_pinchActive) {
+            m_pinchAccum *= (1.0f + (float)ge->value());
+
+            // Zoom visivo istantaneo via trasformazione QGraphicsView
+            // NON re-renderizza — scala solo la vista
+            float visualZoom = qBound(0.05f, m_pinchStartZoom * m_pinchAccum, 12.0f);
+            float scale = visualZoom / m_pinchStartZoom;
+            setTransform(QTransform::fromScale(scale, scale));
+
+            e->accept();
+            return true;
+        }
+
+        if (ge->gestureType() == Qt::EndNativeGesture && m_pinchActive) {
+            m_pinchActive = false;
+            float finalZoom = qBound(0.1f, m_pinchStartZoom * m_pinchAccum, 6.0f);
+            m_pinchAccum = 1.0f;
+
+            // Reimposta la trasformazione e re-renderizza alla nuova risoluzione
+            setTransform(QTransform::fromScale(1.0, 1.0));
+            emit zoomChangeRequested(finalZoom);
+            e->accept();
+            return true;
+        }
     }
-    if (best != m_currentPage) {
-        m_currentPage = best;
-        emit currentPageChanged(best+1);
-    }
+    return QGraphicsView::event(e);
 }
 
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+void PdfView::keyPressEvent(QKeyEvent *e)
+{
+    if (e->modifiers() & Qt::ControlModifier) {
+        if (e->key() == Qt::Key_C) { copySelection(); return; }
+        if (e->key() == Qt::Key_A) { selectAll();     return; }
+    }
+    QGraphicsView::keyPressEvent(e);
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
 void PdfView::setSearchMatches(const QList<SearchMatch> &matches)
 {
     clearSearchMatches();
     if (!m_doc) return;
-    int total = m_doc->pageCount();
+    int total = m_scene->pageCount();
     m_matchRects.resize(total);
     m_totalMatches = 0;
     for (const SearchMatch &sm : matches) {
@@ -569,17 +725,17 @@ void PdfView::setSearchMatches(const QList<SearchMatch> &matches)
             m_totalMatches += sm.rects.size();
         }
     }
-    for (int i = 0; i < m_pages.size(); ++i)
-        if (i < m_matchRects.size() && !m_matchRects[i].isEmpty())
-            m_pages[i]->setHighlights(m_matchRects[i], m_zoom);
+    m_scene->setSearchMatches(matches);
 }
 
 void PdfView::clearSearchMatches()
 {
     m_matchRects.clear();
     m_totalMatches = 0;
-    for (auto *pw : m_pages) pw->clearHighlights();
+    m_scene->clearSearchMatches();
 }
+
+int PdfView::totalMatchCount() const { return m_totalMatches; }
 
 void PdfView::jumpToMatch(int globalIdx)
 {
@@ -588,30 +744,19 @@ void PdfView::jumpToMatch(int globalIdx)
         int n = m_matchRects[p].size();
         if (globalIdx < count + n) {
             int localIdx = globalIdx - count;
+            auto *item = m_scene->pageItem(p);
+            if (item) item->setCurrentHighlight(localIdx);
 
-            if (p < m_pages.size())
-                m_pages[p]->setCurrentHighlight(localIdx);
+            // Scroll animato alla posizione del match
+            QRectF r = m_scene->pageRect(p);
+            float matchY = r.top() + m_matchRects[p][localIdx].top() * m_zoom;
+            int   target = (int)(matchY - viewport()->height() / 2);
 
-            QWidget *block = (p < m_pages.size()) ? m_pages[p]->parentWidget() : nullptr;
-            if (!block) { scrollToPage(p); return; }
-
-            int blockY     = block->mapTo(m_inner, QPoint(0,0)).y();
-            const QRectF &r = m_matchRects[p][localIdx];
-            int matchY     = (int)(r.top() * m_zoom);
-            int matchH     = (int)(r.height() * m_zoom);
-            int absMatchY  = blockY + matchY;
-            int viewportH  = viewport()->height();
-
-            // Center the match vertically in the viewport
-            int scrollTo   = absMatchY - (viewportH - matchH) / 2;
-            scrollTo       = qMax(0, qMin(scrollTo, verticalScrollBar()->maximum()));
-
-            // Smooth animation
             auto *anim = new QPropertyAnimation(verticalScrollBar(), "value", this);
             anim->setDuration(180);
             anim->setEasingCurve(QEasingCurve::OutCubic);
             anim->setStartValue(verticalScrollBar()->value());
-            anim->setEndValue(scrollTo);
+            anim->setEndValue(qBound(0, target, verticalScrollBar()->maximum()));
             anim->start(QAbstractAnimation::DeleteWhenStopped);
 
             m_currentPage = p;
@@ -620,4 +765,27 @@ void PdfView::jumpToMatch(int globalIdx)
         }
         count += n;
     }
+}
+
+// ── Text operations ───────────────────────────────────────────────────────────
+QString PdfView::selectedText() const
+{
+    return m_scene ? m_scene->selectedText() : QString();
+}
+
+void PdfView::copySelection() const
+{
+    QString text = selectedText();
+    if (!text.isEmpty()) QApplication::clipboard()->setText(text);
+}
+
+void PdfView::selectAll()
+{
+    if (m_scene) m_scene->selectAll(m_currentPage);
+}
+
+void PdfView::setSelectionColor(const QColor &c)
+{
+    m_selColor = c;
+    if (m_scene) m_scene->setSelectionColor(c);
 }

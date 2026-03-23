@@ -1,8 +1,12 @@
 #include "SidebarWidget.h"
 #include "Theme.h"
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QScrollArea>
+#include <QPushButton>
+#include <QInputDialog>
+#include <QSettings>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
 #include <QListWidgetItem>
@@ -26,16 +30,14 @@ SidebarWidget::SidebarWidget(QWidget *parent) : QWidget(parent)
             background:transparent; color:%2;
             padding:6px 0; font-size:9px;
             letter-spacing:1.5px; text-transform:uppercase;
-            border-bottom:2px solid transparent; min-width:60px;
+            border-bottom:2px solid transparent; min-width:55px;
         }
         QTabBar::tab:selected  { color:%3; border-bottom-color:%3; }
         QTabBar::tab:hover:!selected { color:%4; }
     )").arg(Theme::SURFACE).arg(Theme::TEXT_DIMMER)
        .arg(Theme::ACCENT).arg(Theme::TEXT_DIM));
 
-    // ── Thumbnails ────────────────────────────────────────────────────────────
-    m_thumbList = new QListWidget(this);
-    m_thumbList->setStyleSheet(QString(R"(
+    QString listStyle = QString(R"(
         QListWidget { background:%1; border:none; }
         QListWidget::item {
             background:transparent; border:1px solid transparent;
@@ -45,18 +47,9 @@ SidebarWidget::SidebarWidget(QWidget *parent) : QWidget(parent)
         QListWidget::item:selected { background:%5; border-color:%6; }
     )").arg(Theme::SURFACE).arg(Theme::TEXT_DIM)
        .arg(Theme::SURFACE2).arg(Theme::BORDER)
-       .arg(Theme::ACCENT_DIM).arg(Theme::ACCENT));
-    m_thumbList->setIconSize(QSize(160,220));
-    m_thumbList->setSpacing(4);
-    m_thumbList->setResizeMode(QListView::Adjust);
+       .arg(Theme::ACCENT_DIM).arg(Theme::ACCENT);
 
-    connect(m_thumbList, &QListWidget::currentRowChanged,
-            this, &SidebarWidget::onThumbnailClicked);
-
-    // ── Bookmarks ─────────────────────────────────────────────────────────────
-    m_bookmarkTree = new QTreeWidget(this);
-    m_bookmarkTree->setHeaderHidden(true);
-    m_bookmarkTree->setStyleSheet(QString(R"(
+    QString treeStyle = QString(R"(
         QTreeWidget { background:%1; border:none; color:%2; font-size:12px; }
         QTreeWidget::item { padding:4px 8px; border:none; }
         QTreeWidget::item:hover    { background:%3; color:%4; }
@@ -64,13 +57,66 @@ SidebarWidget::SidebarWidget(QWidget *parent) : QWidget(parent)
         QTreeWidget::branch { background:%1; }
     )").arg(Theme::SURFACE).arg(Theme::TEXT_DIM)
        .arg(Theme::SURFACE2).arg(Theme::TEXT)
-       .arg(Theme::SURFACE3).arg(Theme::ACCENT2));
-    m_bookmarkTree->setIndentation(16);
+       .arg(Theme::SURFACE3).arg(Theme::ACCENT2);
 
+    // ── Tab Pagine ────────────────────────────────────────────────────────────
+    m_thumbList = new QListWidget(this);
+    m_thumbList->setStyleSheet(listStyle);
+    m_thumbList->setIconSize(QSize(160,220));
+    m_thumbList->setSpacing(4);
+    m_thumbList->setResizeMode(QListView::Adjust);
+    connect(m_thumbList, &QListWidget::currentRowChanged,
+            this, &SidebarWidget::onThumbnailClicked);
+
+    // ── Tab Segnalibri PDF ────────────────────────────────────────────────────
+    m_bookmarkTree = new QTreeWidget(this);
+    m_bookmarkTree->setHeaderHidden(true);
+    m_bookmarkTree->setStyleSheet(treeStyle);
+    m_bookmarkTree->setIndentation(16);
     connect(m_bookmarkTree, &QTreeWidget::itemClicked,
             this, &SidebarWidget::onBookmarkClicked);
 
-    // ── Info ──────────────────────────────────────────────────────────────────
+    // ── Tab Preferiti (segnalibri personali) ──────────────────────────────────
+    auto *favWidget = new QWidget(this);
+    favWidget->setStyleSheet(QString("background:%1;").arg(Theme::SURFACE));
+    auto *favLay = new QVBoxLayout(favWidget);
+    favLay->setContentsMargins(0,0,0,0);
+    favLay->setSpacing(0);
+
+    // Pulsanti aggiungi/rimuovi
+    auto *btnRow = new QWidget(favWidget);
+    btnRow->setStyleSheet(QString(
+        "background:%1; border-bottom:1px solid %2;")
+        .arg(Theme::SURFACE).arg(Theme::BORDER));
+    auto *btnL = new QHBoxLayout(btnRow);
+    btnL->setContentsMargins(6,4,6,4);
+    btnL->setSpacing(4);
+
+    m_addBmBtn    = new QPushButton("+ Aggiungi", btnRow);
+    m_removeBmBtn = new QPushButton("✕ Rimuovi",  btnRow);
+    QString bmBtnStyle = QString(
+        "QPushButton{background:transparent;color:%1;border:1px solid %2;"
+        "border-radius:3px;font-size:11px;padding:3px 8px;}"
+        "QPushButton:hover{background:%3;color:%4;border-color:%4;}")
+        .arg(Theme::TEXT_DIM).arg(Theme::BORDER)
+        .arg(Theme::SURFACE2).arg(Theme::ACCENT);
+    m_addBmBtn->setStyleSheet(bmBtnStyle);
+    m_removeBmBtn->setStyleSheet(bmBtnStyle);
+    btnL->addWidget(m_addBmBtn);
+    btnL->addWidget(m_removeBmBtn);
+    btnL->addStretch();
+
+    m_personalList = new QListWidget(favWidget);
+    m_personalList->setStyleSheet(listStyle);
+    connect(m_personalList, &QListWidget::itemClicked,
+            this, &SidebarWidget::onPersonalBookmarkClicked);
+    connect(m_addBmBtn,    &QPushButton::clicked, this, &SidebarWidget::onAddPersonalBookmark);
+    connect(m_removeBmBtn, &QPushButton::clicked, this, &SidebarWidget::onRemovePersonalBookmark);
+
+    favLay->addWidget(btnRow);
+    favLay->addWidget(m_personalList, 1);
+
+    // ── Tab Info ──────────────────────────────────────────────────────────────
     auto *infoScroll = new QScrollArea(this);
     infoScroll->setFrameShape(QFrame::NoFrame);
     infoScroll->setStyleSheet(QString("background:%1;").arg(Theme::SURFACE));
@@ -84,7 +130,8 @@ SidebarWidget::SidebarWidget(QWidget *parent) : QWidget(parent)
     infoScroll->setWidgetResizable(true);
 
     m_tabs->addTab(m_thumbList,    "Pagine");
-    m_tabs->addTab(m_bookmarkTree, "Segnalibri");
+    m_tabs->addTab(m_bookmarkTree, "Indice");
+    m_tabs->addTab(favWidget,      "★ Preferiti");
     m_tabs->addTab(infoScroll,     "Info");
 
     lay->addWidget(m_tabs);
@@ -95,6 +142,8 @@ void SidebarWidget::setDocument(PdfDocument *doc, int pageCount)
     m_thumbList->clear();
     m_bookmarkTree->clear();
     while (m_infoLayout->rowCount()) m_infoLayout->removeRow(0);
+    m_personalBookmarks.clear();
+    m_personalList->clear();
 
     if (!doc) return;
 
@@ -105,6 +154,7 @@ void SidebarWidget::setDocument(PdfDocument *doc, int pageCount)
 
 void SidebarWidget::setCurrentPage(int page)
 {
+    m_currentPage = page;
     if (m_thumbList->count() == 0) return;
     int idx = page - 1;
     if (idx < 0 || idx >= m_thumbList->count()) return;
@@ -114,27 +164,147 @@ void SidebarWidget::setCurrentPage(int page)
     m_updatingSelection = false;
 }
 
+// ── Segnalibri personali ──────────────────────────────────────────────────────
+void SidebarWidget::addPersonalBookmark(int page, const QString &title)
+{
+    // Evita duplicati sulla stessa pagina
+    for (const auto &bm : m_personalBookmarks)
+        if (bm.page == page) return;
+
+    PersonalBM bm;
+    bm.page  = page;
+    bm.title = title.isEmpty() ? QString("Pagina %1").arg(page) : title;
+    m_personalBookmarks.append(bm);
+    rebuildPersonalBookmarks();
+}
+
+void SidebarWidget::loadPersonalBookmarks(const QString &filePath)
+{
+    m_personalBookmarks.clear();
+    QSettings s("SfogliAccio", "SfogliAccio");
+    QString key = QString("bookmarks/%1").arg(QString(filePath.toUtf8().toHex()));
+    int n = s.beginReadArray(key);
+    for (int i = 0; i < n; ++i) {
+        s.setArrayIndex(i);
+        PersonalBM bm;
+        bm.page  = s.value("page").toInt();
+        bm.title = s.value("title").toString();
+        m_personalBookmarks.append(bm);
+    }
+    s.endArray();
+    rebuildPersonalBookmarks();
+}
+
+void SidebarWidget::savePersonalBookmarks(const QString &filePath)
+{
+    QSettings s("SfogliAccio", "SfogliAccio");
+    QString key = QString("bookmarks/%1").arg(QString(filePath.toUtf8().toHex()));
+    s.beginWriteArray(key);
+    for (int i = 0; i < m_personalBookmarks.size(); ++i) {
+        s.setArrayIndex(i);
+        s.setValue("page",  m_personalBookmarks[i].page);
+        s.setValue("title", m_personalBookmarks[i].title);
+    }
+    s.endArray();
+}
+
+void SidebarWidget::rebuildPersonalBookmarks()
+{
+    m_personalList->clear();
+    // Ordina per pagina
+    auto sorted = m_personalBookmarks;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const PersonalBM &a, const PersonalBM &b){ return a.page < b.page; });
+    for (const auto &bm : sorted) {
+        auto *item = new QListWidgetItem(
+            QString("⭐ %1  —  pag. %2").arg(bm.title).arg(bm.page));
+        item->setData(Qt::UserRole, bm.page - 1); // 0-based
+        item->setToolTip(QString("Vai a pagina %1").arg(bm.page));
+        m_personalList->addItem(item);
+    }
+}
+
+void SidebarWidget::onAddPersonalBookmark()
+{
+    bool ok;
+    QString title = QInputDialog::getText(this, "Aggiungi preferito",
+        QString("Nome per pagina %1:").arg(m_currentPage),
+        QLineEdit::Normal,
+        QString("Pagina %1").arg(m_currentPage), &ok);
+    if (!ok) return;
+    addPersonalBookmark(m_currentPage, title);
+}
+
+void SidebarWidget::onRemovePersonalBookmark()
+{
+    auto *item = m_personalList->currentItem();
+    if (!item) return;
+    int page0 = item->data(Qt::UserRole).toInt(); // 0-based
+    m_personalBookmarks.removeIf([page0](const PersonalBM &bm){
+        return bm.page == page0 + 1;
+    });
+    rebuildPersonalBookmarks();
+}
+
+void SidebarWidget::onPersonalBookmarkClicked(QListWidgetItem *item)
+{
+    if (!item) return;
+    emit pageRequested(item->data(Qt::UserRole).toInt());
+}
+
+// ── Build helpers ─────────────────────────────────────────────────────────────
 void SidebarWidget::buildThumbnails(PdfDocument *doc, int count)
 {
     const int THUMB_W = 160;
+    // Per PDF grandi, limita le thumbnail iniziali e carica le altre lazy
     for (int i = 0; i < count; ++i) {
         auto *item = new QListWidgetItem(m_thumbList);
         item->setText(QString("Pag. %1").arg(i+1));
         item->setTextAlignment(Qt::AlignHCenter | Qt::AlignBottom);
         item->setSizeHint(QSize(180,240));
 
-        auto *watcher = new QFutureWatcher<QImage>(this);
-        int idx = i;
-        connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, idx, watcher]() {
-            QImage img = watcher->result();
-            if (!img.isNull() && idx < m_thumbList->count())
-                m_thumbList->item(idx)->setIcon(QIcon(QPixmap::fromImage(img)));
-            watcher->deleteLater();
-        });
-        watcher->setFuture(QtConcurrent::run([doc, idx, THUMB_W]() {
-            return doc->renderThumbnail(idx, THUMB_W);
-        }));
+        // Carica solo le prime 20 thumbnail subito, le altre on-demand
+        if (i < 20) {
+            auto *watcher = new QFutureWatcher<QImage>(this);
+            int idx = i;
+            connect(watcher, &QFutureWatcher<QImage>::finished, this,
+                    [this, idx, watcher]() {
+                QImage img = watcher->result();
+                if (!img.isNull() && idx < m_thumbList->count())
+                    m_thumbList->item(idx)->setIcon(QIcon(QPixmap::fromImage(img)));
+                watcher->deleteLater();
+            });
+            watcher->setFuture(QtConcurrent::run([doc, idx, THUMB_W]() {
+                return doc->renderThumbnail(idx, THUMB_W);
+            }));
+        }
     }
+
+    // Carica thumbnail quando diventano visibili
+    connect(m_thumbList->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, [this, doc, count, THUMB_W]() {
+        int first = m_thumbList->currentRow();
+        QRect vp  = m_thumbList->viewport()->rect();
+        for (int i = 0; i < count; ++i) {
+            auto *item = m_thumbList->item(i);
+            if (!item) continue;
+            if (item->icon().isNull() &&
+                m_thumbList->visualItemRect(item).intersects(vp)) {
+                auto *watcher = new QFutureWatcher<QImage>(this);
+                connect(watcher, &QFutureWatcher<QImage>::finished, this,
+                        [this, i, watcher]() {
+                    QImage img = watcher->result();
+                    if (!img.isNull() && i < m_thumbList->count())
+                        m_thumbList->item(i)->setIcon(QIcon(QPixmap::fromImage(img)));
+                    watcher->deleteLater();
+                });
+                watcher->setFuture(QtConcurrent::run([doc, i, THUMB_W]() {
+                    return doc->renderThumbnail(i, THUMB_W);
+                }));
+            }
+        }
+        Q_UNUSED(first);
+    });
 }
 
 void SidebarWidget::buildBookmarks(PdfDocument *doc)
@@ -142,8 +312,9 @@ void SidebarWidget::buildBookmarks(PdfDocument *doc)
     auto bms = doc->bookmarks();
     if (bms.isEmpty()) {
         auto *item = new QTreeWidgetItem(m_bookmarkTree);
-        item->setText(0, "Nessun segnalibro");
+        item->setText(0, "Nessun indice disponibile");
         item->setFlags(Qt::NoItemFlags);
+        item->setForeground(0, QColor(Theme::TEXT_DIMMER));
         return;
     }
 
@@ -154,14 +325,9 @@ void SidebarWidget::buildBookmarks(PdfDocument *doc)
         item->setData(0, Qt::UserRole, bm.pageIndex);
         item->setToolTip(0, QString("Pagina %1").arg(bm.pageIndex+1));
 
-        if (bm.level == 0 || stack.isEmpty()) {
-            while (stack.size() > bm.level) stack.pop_back();
-            m_bookmarkTree->addTopLevelItem(item);
-        } else {
-            while (stack.size() > bm.level) stack.pop_back();
-            if (!stack.isEmpty()) stack.last()->addChild(item);
-            else m_bookmarkTree->addTopLevelItem(item);
-        }
+        while (stack.size() > bm.level) stack.pop_back();
+        if (stack.isEmpty()) m_bookmarkTree->addTopLevelItem(item);
+        else stack.last()->addChild(item);
         stack.append(item);
     }
     m_bookmarkTree->expandAll();
@@ -190,6 +356,7 @@ void SidebarWidget::buildInfo(PdfDocument *doc, int count)
     addRow("Produttore", doc->producer());
     addRow("Creatore",   doc->creator());
     addRow("Pagine",     QString::number(count));
+    addRow("File",       doc->filePath().section('/', -1));
 }
 
 void SidebarWidget::onThumbnailClicked(int row)
